@@ -297,11 +297,9 @@ function makeLocalCommandHarness(input: {
    * A side chat whose context targets this run, an earlier run that failed or was cancelled before
    * the provider, or an earlier run that delivered it. `nativeForkFrom` plans a native fork of the
    * parent. `switchedProvider` puts the earlier run and its context on another provider thread.
-   * `earlierFolder` records where the earlier run started, with the provider turn that accepted it.
    */
   readonly sideChat?: {
     readonly contextRun: "current" | "failed" | "cancelled" | "delivered";
-    readonly earlierFolder?: string;
     readonly nativeForkFrom?: "idle" | "busy";
     readonly switchedProvider?: boolean;
     readonly threadRuntimeMode?: OrchestrationV2ThreadProjection["thread"]["runtimeMode"];
@@ -565,7 +563,6 @@ function makeLocalCommandHarness(input: {
   };
   if (input.sideChat !== undefined) {
     const earlierRunId = RunId.make("side-chat-earlier-run");
-    const earlierAttemptId = RunAttemptId.make("side-chat-earlier-attempt");
     projection = {
       ...projection,
       thread: {
@@ -587,13 +584,10 @@ function makeLocalCommandHarness(input: {
                 id: earlierRunId,
                 ordinal: 1,
                 userMessageId: MessageId.make("side-chat-earlier-message"),
-                activeAttemptId: earlierAttemptId,
+                activeAttemptId: RunAttemptId.make("side-chat-earlier-attempt"),
                 ...(input.sideChat.switchedProvider
                   ? { providerThreadId: oldProviderThreadId }
                   : {}),
-                ...(input.sideChat.earlierFolder === undefined
-                  ? {}
-                  : { cwd: input.sideChat.earlierFolder }),
                 status:
                   input.sideChat.contextRun === "delivered"
                     ? "completed"
@@ -654,27 +648,6 @@ function makeLocalCommandHarness(input: {
             : {}),
         },
       ],
-      ...(input.sideChat.earlierFolder === undefined
-        ? {}
-        : {
-            attempts: [
-              ...projection.attempts,
-              {
-                ...parentTurns[0]!.attempt,
-                id: earlierAttemptId,
-                runId: earlierRunId,
-                providerThreadId,
-              },
-            ],
-            providerTurns: [
-              {
-                ...parentTurns[0]!.turn,
-                id: ProviderTurnId.make("side-chat-earlier-turn"),
-                providerThreadId,
-                runAttemptId: earlierAttemptId,
-              },
-            ],
-          }),
     };
   }
   if ("historyReadFailureAfterFallback" in input || "resumeFailure" in input) {
@@ -859,6 +832,7 @@ function makeLocalCommandHarness(input: {
                     providerSession,
                     ensureThread: () => Effect.succeed(providerThread),
                     resumeThread: () => Effect.succeed(projection.providerThreads[0]),
+                    startTurn,
                   } as never)
                 : Effect.die("A local command must not open a native session."),
   );
@@ -1332,33 +1306,6 @@ effectIt.effect.each([
 );
 
 effectIt.effect.each([
-  {
-    text: "Where are we?",
-    earlierFolder: "/tmp/old-folder",
-    context: "The working folder changed from /tmp/old-folder to /tmp/native-account-command.",
-  },
-  { text: "Where are we?", earlierFolder: "/tmp/native-account-command", context: "" },
-  { text: "/goal Ship it", earlierFolder: "/tmp/old-folder", context: "" },
-] as const)(
-  "tells the model inline when the folder changed since its latest accepted turn: %j",
-  ({ text, earlierFolder, context }) =>
-    Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({
-        text,
-        sideChat: { contextRun: "delivered", earlierFolder },
-      });
-      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
-
-      yield* harness.start;
-
-      expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
-        withInlineContext(context, text),
-      ]);
-      expect(harness.projection().messages.at(-1)?.text).toBe(text);
-    }),
-);
-
-effectIt.effect.each([
   { nativeForkFrom: "idle", forks: true, transferStatus: "consumed", handoffIds: [] },
   {
     nativeForkFrom: "busy",
@@ -1406,6 +1353,47 @@ effectIt.effect.each([
 
     expect(harness.interruptTurn).not.toHaveBeenCalled();
     expect(harness.projection().runs.at(-1)?.status).toBe("running");
+  }),
+);
+
+effectIt.effect.each([
+  { text: "Continue", line: true },
+  { text: "/goal ship it", line: false },
+  { text: "Continue", restartContinuation: true, line: false },
+])("tells the model the working folder changed: %j", ({ text, line, restartContinuation }) =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text,
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    const projection = harness.projection();
+    const [previous, current] = projection.runs;
+    harness.setProjection({
+      ...projection,
+      runs: [
+        { ...previous!, cwd: "/tmp/folder-a" },
+        restartContinuation ? { ...current!, restartContinuationOfRunId: previous!.id } : current!,
+      ],
+      attempts: [
+        ...projection.attempts,
+        { ...projection.attempts[0]!, id: previous!.activeAttemptId!, runId: previous!.id },
+      ],
+    });
+    harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+
+    yield* harness.start;
+    const turn = harness.startRootRun.mock.calls[0]![0];
+    yield* turn.session.startTurn(turn as never);
+
+    expect(harness.startTurn.mock.calls.map(([sent]) => sent.message.text)).toEqual([
+      withInlineContext(
+        line
+          ? 'The working folder changed from "/tmp/folder-a" to "/tmp/native-account-command".'
+          : "",
+        text,
+      ),
+    ]);
+    expect(harness.projection().messages.at(-1)?.text).toBe(text);
   }),
 );
 

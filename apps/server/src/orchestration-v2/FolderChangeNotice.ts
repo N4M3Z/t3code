@@ -1,42 +1,57 @@
-import type {
-  OrchestrationV2ProviderTurn,
-  OrchestrationV2Run,
-  OrchestrationV2RunAttempt,
+import {
+  isCompactionCommandMessage,
+  parseGoalCommand,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 
-/** The folder of the latest run the model saw: accepted by the provider, not rolled back, not a compaction or `/goal` turn, not a restart continuation. */
-export function latestCountedRunFolder(
-  projection: {
-    readonly runs: ReadonlyArray<OrchestrationV2Run>;
-    readonly attempts: ReadonlyArray<Pick<OrchestrationV2RunAttempt, "id" | "runId">>;
-    readonly providerTurns: ReadonlyArray<Pick<OrchestrationV2ProviderTurn, "runAttemptId">>;
-  },
-  compactionMessageIds: ReadonlySet<string>,
-): string | undefined {
+export function latestCountedRunFolder(projection: {
+  readonly runs: ReadonlyArray<OrchestrationV2Run>;
+  readonly attempts: ReadonlyArray<
+    Pick<OrchestrationV2RunAttempt, "id" | "runId" | "providerThreadId">
+  >;
+  readonly providerTurns: ReadonlyArray<Pick<OrchestrationV2ProviderTurn, "runAttemptId">>;
+  readonly providerThreads: ReadonlyArray<Pick<OrchestrationV2ProviderThread, "id" | "driver">>;
+  readonly messages: ReadonlyArray<
+    Pick<OrchestrationV2ConversationMessage, "id" | "role" | "text" | "attachments">
+  >;
+}): string | undefined {
   const acceptedAttemptIds = new Set(projection.providerTurns.map((turn) => turn.runAttemptId));
-  const acceptedRunIds = new Set(
-    projection.attempts
-      .filter((attempt) => acceptedAttemptIds.has(attempt.id))
+  const acceptedAttempts = projection.attempts.filter((attempt) =>
+    acceptedAttemptIds.has(attempt.id),
+  );
+  const goalThreadIds = new Set(
+    projection.providerThreads
+      .filter((thread) => thread.driver === "codex" || thread.driver === "claudeAgent")
+      .map((thread) => thread.id),
+  );
+  const acceptedRunIds = new Set(acceptedAttempts.map((attempt) => attempt.runId));
+  const goalAsTextRunIds = new Set(
+    acceptedAttempts
+      .filter((attempt) => !goalThreadIds.has(attempt.providerThreadId))
       .map((attempt) => attempt.runId),
   );
-  return projection.runs.reduce<OrchestrationV2Run | undefined>(
-    (latest, run) =>
-      run.cwd !== undefined &&
+  const messages = new Map(projection.messages.map((message) => [message.id, message]));
+  return projection.runs.reduce<OrchestrationV2Run | undefined>((latest, run) => {
+    const message = messages.get(run.userMessageId);
+    const goal = message !== undefined && parseGoalCommand(message) !== null;
+    return run.cwd !== undefined &&
       run.status !== "rolled_back" &&
       run.restartContinuationOfRunId === undefined &&
-      !compactionMessageIds.has(run.userMessageId) &&
-      acceptedRunIds.has(run.id) &&
+      !(message !== undefined && isCompactionCommandMessage(message)) &&
+      (goal ? goalAsTextRunIds : acceptedRunIds).has(run.id) &&
       (latest === undefined || runRanAfter(run, latest))
-        ? run
-        : latest,
-    undefined,
-  )?.cwd;
+      ? run
+      : latest;
+  }, undefined)?.cwd;
 }
 
-/** Names both folders as recorded; symbolic links decide sameness, and a missing folder compares by its path. */
 export const folderChangeNote = Effect.fn("orchestrationV2.folderChangeNote")(function* (
   fileSystem: FileSystem.FileSystem,
   previous: string | undefined,
@@ -44,8 +59,18 @@ export const folderChangeNote = Effect.fn("orchestrationV2.folderChangeNote")(fu
 ) {
   if (previous === undefined || previous === cwd) return "";
   const resolve = (target: string) =>
-    fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => target));
+    fileSystem.realPath(target).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.succeed(target),
+      ),
+    );
+  const quote = (folder: string) =>
+    JSON.stringify(folder).replace(
+      /[\u0085\u2028\u2029]/gu,
+      (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
   return (yield* resolve(previous)) === (yield* resolve(cwd))
     ? ""
-    : `The working folder changed from ${previous} to ${cwd}.`;
+    : `The working folder changed from ${quote(previous)} to ${quote(cwd)}.`;
 });

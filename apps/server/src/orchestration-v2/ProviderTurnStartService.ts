@@ -852,19 +852,18 @@ export const layer: Layer.Layer<
         projection.providerTurns,
         projection.attempts,
       );
-      const compactionMessageIds = new Set(
-        projection.messages
-          .filter(
-            (candidate) =>
-              isCompactionCommandMessage(candidate) ||
-              (goalDriver && parseGoalCommand(candidate) !== null),
-          )
-          .map((candidate) => candidate.id),
-      );
       const restartCancelledWork = pendingRestartCancelledBackgroundWork({
         runs: projection.runs,
         providerTurns: projection.providerTurns,
-        compactionMessageIds,
+        compactionMessageIds: new Set(
+          projection.messages
+            .filter(
+              (candidate) =>
+                isCompactionCommandMessage(candidate) ||
+                (goalDriver && parseGoalCommand(candidate) !== null),
+            )
+            .map((candidate) => candidate.id),
+        ),
         run,
         attempts: projection.attempts,
       });
@@ -880,7 +879,7 @@ export const layer: Layer.Layer<
           ? ""
           : yield* folderChangeNote(
               fileSystem,
-              latestCountedRunFolder(projection, compactionMessageIds),
+              latestCountedRunFolder(projection),
               resolvedRuntimePolicy.cwd,
             );
       const tokenCap = yield* handoffTokenCapConfig.pipe(

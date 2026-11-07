@@ -1509,9 +1509,18 @@ export const layer: Layer.Layer<
         createdAt: providerThread.createdAt,
         updatedAt: now,
       };
+      const repositoryRoot =
+        projection.thread.worktreePath === null
+          ? (yield* projects.getById(projection.thread.projectId).pipe(
+              Effect.map(Option.getOrUndefined),
+              Effect.orElseSucceed(() => undefined),
+            ))?.repositoryIdentity?.rootPath
+          : undefined;
       const runningRun: OrchestrationV2Run = {
         ...run,
-        ...(resolvedRuntimePolicy.cwd === null ? {} : { cwd: resolvedRuntimePolicy.cwd }),
+        ...(resolvedRuntimePolicy.cwd === null
+          ? {}
+          : { cwd: resolvedRuntimePolicy.cwd, repositoryRoot }),
         status: "running",
         startedAt: now,
       };

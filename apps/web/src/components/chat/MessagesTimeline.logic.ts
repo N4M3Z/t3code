@@ -2673,18 +2673,34 @@ export function shouldCollapseUserMessage(text: string): boolean {
   );
 }
 
-export function deriveRunFolderByRunId(
-  runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "cwd">>,
-): ReadonlyMap<RunId, string> {
-  const folders = new Map<RunId, string>();
-  for (const run of runs) if (run.cwd !== undefined) folders.set(run.id, run.cwd);
-  return folders;
+type RunFolder = Pick<OrchestrationV2Run, "id" | "cwd" | "repositoryRoot">;
+export type TimelineRunFolder = Pick<OrchestrationV2Run, "repositoryRoot"> & { cwd: string };
+
+/** Live runs follow page folders, so they win; the string keeps rows stable across run events. */
+export function runFoldersSignature(
+  runs: ReadonlyArray<RunFolder>,
+  runFolders: ReadonlyArray<RunFolder> = [],
+): string {
+  return JSON.stringify(
+    [...runFolders, ...runs].flatMap(({ id, cwd, repositoryRoot }) =>
+      cwd === undefined ? [] : [{ id, cwd, repositoryRoot }],
+    ),
+  );
+}
+
+export function deriveRunFolderByRunId(signature: string): ReadonlyMap<RunId, TimelineRunFolder> {
+  return new Map(
+    (JSON.parse(signature) as Array<TimelineRunFolder & { id: RunId }>).map(({ id, ...folder }) => [
+      id,
+      folder,
+    ]),
+  );
 }
 
 export function timelineRowFolder(
   row: MessagesTimelineRow,
-  runFolderByRunId: ReadonlyMap<RunId, string>,
-): string | undefined {
+  runFolderByRunId: ReadonlyMap<RunId, TimelineRunFolder>,
+): TimelineRunFolder | undefined {
   const runId =
     row.kind === "message"
       ? row.message.runId

@@ -27,6 +27,7 @@ import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   deriveRunFolderByRunId,
+  runFoldersSignature,
   timelineRowFolder,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
@@ -4566,19 +4567,31 @@ describe("timelineRowFolder", () => {
     row({ kind: "message", message: { runId: runId === null ? null : RunId.make(runId) } });
 
   it("resolves a row against its run's folder and leaves other rows to the current one", () => {
-    const folders = deriveRunFolderByRunId([
-      { id: RunId.make("run-a"), cwd: "/root" },
-      { id: RunId.make("run-b"), cwd: "/worktree" },
-      { id: RunId.make("run-queued") },
-    ]);
-    const folder = (shape: MessagesTimelineRow) => timelineRowFolder(shape, folders);
+    const folders = deriveRunFolderByRunId(
+      runFoldersSignature(
+        [
+          { id: RunId.make("run-a"), cwd: "/repo/app", repositoryRoot: "/repo" },
+          { id: RunId.make("run-b"), cwd: "/worktree" },
+          { id: RunId.make("run-queued") },
+        ],
+        [
+          { id: RunId.make("run-b"), cwd: "/stale" },
+          { id: RunId.make("run-inherited"), cwd: "/source" },
+        ],
+      ),
+    );
+    const folder = (shape: MessagesTimelineRow) => timelineRowFolder(shape, folders)?.cwd;
 
-    expect(folder(message("run-a"))).toBe("/root");
+    expect(timelineRowFolder(message("run-a"), folders)).toEqual({
+      cwd: "/repo/app",
+      repositoryRoot: "/repo",
+    });
+    expect(folder(message("run-inherited"))).toBe("/source");
     expect(
       folder(row({ kind: "proposed-plan", proposedPlan: { runId: RunId.make("run-b") } })),
     ).toBe("/worktree");
     expect(folder(row({ kind: "work", groupedEntries: [{ runId: RunId.make("run-a") }] }))).toBe(
-      "/root",
+      "/repo/app",
     );
     expect(folder(row({ kind: "work-live", entry: { runId: RunId.make("run-b") } }))).toBe(
       "/worktree",

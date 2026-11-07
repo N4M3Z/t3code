@@ -1,15 +1,15 @@
-import type { OrchestrationV2ProjectedTurnItem, OrchestrationV2Run } from "@t3tools/contracts";
+import type { OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 
-import { v2Projection, v2ThreadId, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
+import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import { mergeOlderHistoryIntoProjection } from "./threadHistoryMerge.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
 import { derivePendingThreadRequests } from "./threadRequests.ts";
 
 const NOW = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
 
-function row(index: number): OrchestrationV2ProjectedTurnItem {
+function row(index: number, runId: string | null = null): OrchestrationV2ProjectedTurnItem {
   const id = `item-${index}` as never;
   return {
     position: index,
@@ -20,7 +20,7 @@ function row(index: number): OrchestrationV2ProjectedTurnItem {
       id,
       type: "command_execution",
       threadId: v2ThreadId,
-      runId: null,
+      runId: runId as never,
       nodeId: null,
       providerThreadId: null,
       providerTurnId: null,
@@ -39,26 +39,7 @@ function row(index: number): OrchestrationV2ProjectedTurnItem {
   };
 }
 
-function run(index: number): OrchestrationV2Run {
-  return {
-    id: `run-${index}` as never,
-    threadId: v2ThreadId,
-    ordinal: index,
-    providerInstanceId: v2ThreadShell.providerInstanceId,
-    modelSelection: v2ThreadShell.modelSelection,
-    providerThreadId: null,
-    userMessageId: `message-${index}` as never,
-    rootNodeId: null,
-    activeAttemptId: null,
-    status: "completed",
-    requestedAt: NOW,
-    startedAt: NOW,
-    completedAt: NOW,
-    checkpointId: null,
-    contextHandoffId: null,
-    cwd: `/repo-${index}`,
-  };
-}
+const folder = (runId: string, cwd = `/${runId}`) => ({ id: runId as never, cwd });
 
 describe("threadHistoryMerge", () => {
   it("fills activity around partial messages in canonical order and preserves live edits", () => {
@@ -130,16 +111,18 @@ describe("threadHistoryMerge", () => {
   });
 
   it("prepends older rows and dedupes by source identity", () => {
-    const recent = [row(2), row(3)];
-    const liveRun = { ...run(2), status: "running" as const };
+    const recent = [row(2, "run-2"), row(3, "run-2")];
     const projection = {
       ...v2Projection,
-      runs: [liveRun],
+      runFolders: [folder("run-2")],
       turnItems: recent.map((entry) => entry.item),
       visibleTurnItems: recent.map((entry, position) => ({ ...entry, position })),
     };
-    const older = [row(0), row(1), row(2)];
-    const merged = mergeOlderHistoryIntoProjection(projection, older, undefined, [run(1), run(2)]);
+    const older = [row(0, "run-1"), row(1, "run-1"), row(2, "run-2")];
+    const merged = mergeOlderHistoryIntoProjection(projection, older, undefined, [
+      folder("run-1"),
+      folder("run-2", "/stale"),
+    ]);
     expect(merged.visibleTurnItems.map((entry) => entry.sourceItemId)).toEqual([
       "item-0",
       "item-1",
@@ -153,12 +136,13 @@ describe("threadHistoryMerge", () => {
       "item-0",
       "item-1",
     ]);
-    expect(merged.runs).toEqual([run(1), liveRun]);
+    expect(merged.runFolders).toEqual([folder("run-2"), folder("run-1")]);
+    expect(merged.runs).toBe(projection.runs);
   });
 
   it("fills inherited activity without confusing identical item IDs from different source threads", () => {
     const inherited = (index: number) => ({
-      ...row(index),
+      ...row(index, "run-source"),
       visibility: "inherited" as const,
       sourceThreadId: "fork-source" as never,
     });
@@ -169,7 +153,15 @@ describe("threadHistoryMerge", () => {
       turnItems: [local.item],
       visibleTurnItems: [preview, local],
     };
-    const merged = mergeOlderHistoryIntoProjection(projection, [inherited(0), inherited(1)]);
+    const sourceFolders = [folder("run-source")];
+    const merged = mergeOlderHistoryIntoProjection(
+      projection,
+      [inherited(0), inherited(1)],
+      undefined,
+      sourceFolders,
+    );
+    expect(merged.runFolders).toEqual(sourceFolders);
+    expect(merged.runs).toBe(projection.runs);
     expect(
       merged.visibleTurnItems.map((entry) => [entry.sourceThreadId, entry.sourceItemId]),
     ).toEqual([
@@ -179,7 +171,14 @@ describe("threadHistoryMerge", () => {
     ]);
     expect(merged.visibleTurnItems[1]?.item).toBe(preview.item);
     expect(merged.turnItems).toEqual([local.item]);
-    expect(mergeOlderHistoryIntoProjection(merged, [inherited(0), inherited(1)])).toBe(merged);
+    expect(
+      mergeOlderHistoryIntoProjection(
+        merged,
+        [inherited(0), inherited(1)],
+        undefined,
+        sourceFolders,
+      ),
+    ).toBe(merged);
   });
 
   it("retains live rows that arrived after the older page was fetched", () => {

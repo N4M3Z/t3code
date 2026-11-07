@@ -387,7 +387,7 @@ const inheritsForkConversation = ({
 
 export type ProjectionRecordField = Exclude<
   keyof OrchestrationV2ThreadProjection,
-  "thread" | "updatedAt" | "visibleTurnItems"
+  "thread" | "updatedAt" | "visibleTurnItems" | "runFolders"
 >;
 export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
   OrchestrationV2ThreadProjection,
@@ -3960,12 +3960,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           new Set([...seenThreadIds, threadId]),
           sourceWindow,
         );
+        const visibleTurnItems = buildVisibleTurnItems({ projection, sourceProjection });
+        const runIds = new Set(visibleTurnItems.map((row) => row.item.runId));
         return {
           ...projection,
-          visibleTurnItems: buildVisibleTurnItems({
-            projection,
-            sourceProjection,
-          }),
+          visibleTurnItems,
+          runFolders: [...sourceProjection.runs, ...(sourceProjection.runFolders ?? [])].filter(
+            (run) => runIds.has(run.id),
+          ),
         };
       },
       (effect, threadId, _seenThreadIds, _window?) =>
@@ -5713,6 +5715,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         readonly records: ProjectionRecords<"runs" | "attempts">;
         readonly local: ReadonlyArray<TimelineIndexRow>;
         readonly visible: ReadonlyArray<TimelineIndexRow>;
+        readonly runs: ReadonlyArray<OrchestrationV2Run>;
       },
       ProjectionStoreV2Error
     > = Effect.fn("ProjectionStore.readTimelineIndex")(
@@ -5785,7 +5788,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         });
         const visible = local.filter((row) => isVisible(row.item));
         const fork = inheritedRunFork(records.thread);
-        if (fork === null || seen.has(fork.threadId)) return { records, local, visible };
+        if (fork === null || seen.has(fork.threadId))
+          return { records, local, visible, runs: records.runs };
         const source = yield* readTimelineIndex(
           fork.threadId,
           new Set([...seen, threadId]),
@@ -5824,6 +5828,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         return {
           records,
           local,
+          runs: [...records.runs, ...source.runs],
           visible: [
             ...inherited,
             {
@@ -5968,7 +5973,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               items: conversationOnly
                 ? pageItems.filter((row) => isConversationHistoryItem(row.item))
                 : pageItems,
-              runs: index.records.runs.filter((run) => runIds.has(run.id)),
+              runFolders: index.runs.filter((run) => runIds.has(run.id)),
               nextCursor: bounded.hasMoreHistory ? bounded.nextCursor : page.nextCursor,
               hasMoreHistory: bounded.hasMoreHistory || page.hasMoreHistory,
             };

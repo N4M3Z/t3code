@@ -52,7 +52,11 @@ import {
   COMPOSER_CONTEXT_CLIPBOARD_MIME,
   decodeComposerContextFragment,
 } from "@t3tools/shared/composerContextClipboard";
-import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import {
+  collectComposerContextReferences,
+  formatComposerContextReference,
+} from "@t3tools/shared/composerContextReferences";
+import { resolveFileContextMenuAbsolutePath, type FileContextMenuTarget } from "~/fileContextMenu";
 
 const environmentQuery = vi.hoisted(() => ({
   error: "Pull request not found",
@@ -69,6 +73,14 @@ vi.mock(import("~/state/query"), async (original) => ({
     isSuccess: false,
     refresh: () => {},
   })) as never,
+}));
+
+const fileMenu = vi.hoisted(() => ({ targets: [] as Array<FileContextMenuTarget> }));
+vi.mock(import("~/fileContextMenu"), async (original) => ({
+  ...(await original()),
+  useFileContextMenuHandler: () => (target: FileContextMenuTarget) => {
+    fileMenu.targets.push(target);
+  },
 }));
 
 const audioAsset = vi.hoisted(() => ({ url: "" }));
@@ -1558,36 +1570,92 @@ it("keeps concurrent approvals actionable outside collapsed work and restores se
 });
 
 describe("MessagesTimeline file links", () => {
-  it("opens a row's relative link under its run's folder", async () => {
-    const runId = RunId.make("run-1");
+  it("opens a row's relative links under its run's folder", async () => {
     const providerInstanceId = ProviderInstanceId.make("codex");
-    await using screen = await renderTimeline(
-      [
-        message("See [a](src/a.ts).", { runId }, "in-run"),
-        message("See [b](src/b.ts).", {}, "runless"),
-      ],
-      {
-        markdownCwd: "/repo-w",
-        runs: [
+    const run = (id: string, folder: object = {}) => ({
+      id: RunId.make(id),
+      ordinal: 1,
+      providerInstanceId,
+      modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+      ...folder,
+    });
+    const mention = {
+      version: 1 as const,
+      kind: "mention" as const,
+      contextId: ComposerContextId.make("mention-notes"),
+      label: "notes.md",
+      path: "notes.md",
+    };
+    const entries = [
+      message("See [a](src/a.ts).", { runId: RunId.make("run-1") }, "in-run"),
+      message("See [b](src/b.ts).", {}, "runless"),
+      message("See [c](src/c.ts).", { runId: RunId.make("run-paged") }, "paged"),
+      message(
+        `Read ${formatComposerContextReference(mention)}`,
+        { runId: RunId.make("run-1"), context: { version: 1, records: [mention] } },
+        "mention",
+      ),
+      message("Done", { role: "assistant", runId: RunId.make("run-1") }, "changed"),
+    ];
+    const ui = (props: Partial<TimelineProps>) => (
+      <MessagesTimeline
+        {...baseProps()}
+        routeThreadKey="environment-local:thread-file-links"
+        timelineEntries={entries}
+        workspaceRoot="/repo-w"
+        markdownCwd="/repo-w"
+        turnDiffSummaries={[
           {
-            id: runId,
-            ordinal: 1,
-            providerInstanceId,
-            modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
-            cwd: "/repo-a",
+            runId: RunId.make("run-1"),
+            checkpointTurnCount: 1,
+            checkpointRef: "checkpoint-1" as never,
+            status: "ready",
+            files: [{ path: "app/kept.txt", kind: "modified", additions: 1, deletions: 0 }],
+            assistantMessageId: MessageId.make("changed"),
+            completedAt: CREATED_AT,
           },
-        ],
-      },
+        ]}
+        {...props}
+      />
     );
+    await using screen = await renderElement(ui({ runs: [run("run-1")] }));
     using openFile = vi
       .spyOn(useRightPanelStore.getState(), "openFile")
       .mockImplementation(() => {});
-    const links = () => [
-      ...screen.container.querySelectorAll<HTMLElement>("a.chat-markdown-file-link"),
-    ];
-    await vi.waitFor(() => expect(links()).toHaveLength(2));
-    await click(links()[0]!);
-    await click(links()[1]!);
-    expect(openFile.mock.calls.map((call) => call[1])).toEqual(["/repo-a/src/a.ts", "src/b.ts"]);
+    const opened = async () => {
+      openFile.mockClear();
+      const links = [
+        ...screen.container.querySelectorAll<HTMLElement>("a.chat-markdown-file-link"),
+      ];
+      for (const link of links) await click(link);
+      await click(screen.button("Preview notes.md"));
+      return openFile.mock.calls.map((call) => call[1]);
+    };
+    await vi.waitFor(() =>
+      expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(3),
+    );
+    expect(await opened()).toEqual(["src/a.ts", "src/b.ts", "src/c.ts", "notes.md"]);
+
+    await screen.rerender(
+      ui({
+        runs: [run("run-1", { cwd: "/repo-a/app", repositoryRoot: "/repo-a" })],
+        runFolders: [{ id: RunId.make("run-paged"), cwd: "/repo-old" }],
+      }),
+    );
+    await vi.waitFor(async () =>
+      expect(await opened()).toEqual([
+        "/repo-a/app/src/a.ts",
+        "src/b.ts",
+        "/repo-old/src/c.ts",
+        "/repo-a/app/notes.md",
+      ]),
+    );
+
+    fileMenu.targets = [];
+    await click(screen.button(/^app/));
+    screen.button(/^kept\.txt/).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    expect(fileMenu.targets.map(resolveFileContextMenuAbsolutePath)).toEqual([
+      "/repo-a/app/kept.txt",
+    ]);
   });
 });

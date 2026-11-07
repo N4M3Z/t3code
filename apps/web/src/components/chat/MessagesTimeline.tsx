@@ -14,6 +14,7 @@ import {
   type EnvironmentId,
   type MessageId,
   type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   type RunAttemptId,
   type ServerProviderSkill,
@@ -87,6 +88,7 @@ import {
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
   deriveRunFolderByRunId,
+  runFoldersSignature,
   timelineRowFolder,
   type MessagesTimelineRow,
   type TimelineLatestRun,
@@ -297,7 +299,8 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<ServerProviderSkill>;
-  runs: ReadonlyArray<HandoffTimelineRun & Pick<OrchestrationV2Run, "cwd">>;
+  runs: ReadonlyArray<HandoffTimelineRun & Pick<OrchestrationV2Run, "cwd" | "repositoryRoot">>;
+  runFolders?: OrchestrationV2ThreadProjection["runFolders"];
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -397,6 +400,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   runs: runsProp,
+  runFolders,
   anchorMessageId,
   onAnchorReady,
   onAnchorSizeChanged,
@@ -1236,7 +1240,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       return next;
     });
   });
-  const runFolderByRunId = deriveRunFolderByRunId(runsProp);
+  const runFolderByRunId = deriveRunFolderByRunId(`${runFoldersSignature(runsProp, runFolders)}`);
   const renderItem = ({ item }: { item: MessagesTimelineRow }) => (
     <TimelineRowCtx value={sharedState}>
       <div

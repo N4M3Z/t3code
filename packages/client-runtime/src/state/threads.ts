@@ -810,7 +810,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
                         workAnchorId === undefined
                           ? undefined
                           : { anchorId: workAnchorId, nextCursor: page.nextCursor },
-                        page.runs,
+                        page.runFolders,
                       ),
                     ),
                     status:

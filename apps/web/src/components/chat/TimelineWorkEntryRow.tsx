@@ -119,7 +119,7 @@ const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation(
 
 export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<TimelineWorkEntry> }) {
   const ctx = use(TimelineRowCtx);
-  const rowFolder = use(TimelineRowFolderCtx);
+  const rowFolder = use(TimelineRowFolderCtx)?.cwd;
   const { isWorking, latestRunId } = use(TimelineRowActivityCtx);
   const isStreaming = (entry: TimelineWorkEntry) =>
     isWorking && entry.runId === latestRunId && entry.toolLifecycleStatus === "inProgress";

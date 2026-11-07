@@ -2743,6 +2743,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
               completedAt: nowIso,
               checkpointId: null,
               contextHandoffId: null,
+              cwd: `/repo/run-${ordinal}`,
             })}
           )
         `;
@@ -2914,8 +2915,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.isAbove(bytePage.items.length, 0);
       assert.isBelow(bytePage.items.length, 70);
       assert.deepEqual(
-        bytePage.runs?.map((run) => run.id),
-        bytePage.items.map((row) => row.item.runId),
+        bytePage.runFolders?.map((run) => `${run.id} ${run.cwd}`),
+        bytePage.items.map(({ item }) => `${item.runId} /repo/run-${item.ordinal}`),
       );
       assert.isAtMost(
         Buffer.byteLength(JSON.stringify(bytePage.items), "utf8"),
@@ -7446,6 +7447,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             completedAt: now,
             checkpointId: null,
             contextHandoffId: null,
+            cwd: `/repo/source-${ordinal}`,
           },
         });
         yield* projectionStore.apply({
@@ -7543,6 +7545,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           completedAt: now,
           checkpointId: null,
           contextHandoffId: null,
+          cwd: "/repo/source-2",
         },
       });
 
@@ -7784,6 +7787,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           completedAt: now,
           checkpointId: null,
           contextHandoffId: null,
+          cwd: "/repo/target",
         },
       });
       for (let ordinal = 1; ordinal <= 102; ordinal += 1) {
@@ -7959,6 +7963,17 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           "fork",
         ],
       );
+      const rowFolders = (
+        rows: ReadonlyArray<{ readonly item: { readonly runId: RunId | null } }>,
+        runFolders: ReadonlyArray<{ readonly id: RunId; readonly cwd?: string | undefined }> = [],
+      ) =>
+        rows.flatMap(({ item }) =>
+          item.runId === null ? [] : [runFolders.find((run) => run.id === item.runId)?.cwd],
+        );
+      assert.deepEqual(
+        rowFolders(boundedNested.projection.visibleTurnItems, boundedNested.projection.runFolders),
+        ["/repo/source-2", "/repo/source-2", "/repo/target", "/repo/target"],
+      );
 
       const nestedInitial = buildBoundedThreadProjection({
         policy: { ...THREAD_HISTORY_PAGE_POLICY, maxUserTurns: undefined },
@@ -7974,6 +7989,14 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       )).visibleTurnItems.map((row) => String(row.sourceItemId));
       const nestedIds = nestedInitial.projection.visibleTurnItems.map((row) =>
         String(row.sourceItemId),
+      );
+      const nestedPage = yield* projectionStore.getThreadHistoryPage(
+        nestedThreadId,
+        nestedInitial.historyCursor!,
+      );
+      assert.deepEqual(
+        [...new Set(rowFolders(nestedPage.items, nestedPage.runFolders))],
+        ["/repo/source-1", "/repo/source-2", "/repo/target"],
       );
       let nestedCursor = nestedInitial.historyCursor;
       let nestedPages = 1;

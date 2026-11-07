@@ -1186,7 +1186,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   markdownCwd: string | undefined;
 }) {
   const ctx = use(TimelineRowCtx);
-  const rowFolder = use(TimelineRowFolderCtx);
+  const rowFolder = use(TimelineRowFolderCtx)?.cwd;
   if (props.text.length === 0) {
     return null;
   }

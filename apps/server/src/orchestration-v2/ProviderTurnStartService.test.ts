@@ -993,6 +993,7 @@ function makeLocalCommandHarness(input: {
           getById: () =>
             Effect.succeedSome({
               workspaceRoot: input.workspaceRoot ?? "/tmp/native-account-project",
+              repositoryIdentity: { rootPath: "/tmp/native-account-repository" },
             } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
@@ -1644,7 +1645,10 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         }),
       );
       expect(harness.projection().checkpointScopes).toMatchObject([{ cwd: worktreePath }]);
-      expect(harness.projection().runs.at(-1)?.cwd).toBe(worktreePath);
+      expect(harness.projection().runs.at(-1)).toMatchObject({
+        cwd: worktreePath,
+        repositoryRoot: undefined,
+      });
       expect(harness.startRootRun).toHaveBeenCalledWith(
         expect.objectContaining({
           appThread: expect.objectContaining({ worktreePath }),
@@ -1935,7 +1939,11 @@ effectIt.effect("does not mistake a failed state read for a superseded run", () 
 
     yield* harness.start;
 
-    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    expect(harness.projection().runs.at(-1)).toMatchObject({
+      status: "running",
+      cwd: "/tmp/native-account-command",
+      repositoryRoot: "/tmp/native-account-repository",
+    });
     expect(harness.events.map((event) => event.type)).not.toContain("checkpoint-scope.created");
     const controls = harness.startRootRun.mock.calls[0]?.[0];
     expect(controls).toBeDefined();

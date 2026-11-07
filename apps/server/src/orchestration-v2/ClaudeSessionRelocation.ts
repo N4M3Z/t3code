@@ -175,12 +175,10 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
     const newDir = path.join(projectsDir, claudeProjectDirName(relocatedCwd, input.environment));
     const oldFile = path.join(oldDir, `${input.sessionId}.jsonl`);
     const newFile = path.join(newDir, `${input.sessionId}.jsonl`);
-    const record = `${encodeJson({ type: "relocated", sessionId: input.sessionId, relocatedCwd })}\n`;
+    const record = encodeJson({ type: "relocated", sessionId: input.sessionId, relocatedCwd });
     const sourcePresent = yield* fileSystem.exists(oldFile);
-    // A transcript at the destination only is a move the process lost; none at either end is diskless.
     if (!sourcePresent && !(yield* fileSystem.exists(newFile))) return;
-    const moving = sourcePresent && oldDir !== newDir;
-    if (moving) {
+    if (sourcePresent && oldDir !== newDir) {
       yield* fileSystem.makeDirectory(newDir, { recursive: true, mode: 0o700 });
       const [oldInfo, newInfo] = yield* Effect.all([
         fileSystem.stat(oldDir),
@@ -193,7 +191,7 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
       );
     }
     const contents = yield* fileSystem.readFileString(newFile);
-    // Only this session's transcript proves a lost move; as in the SDK, its first sessionId names it.
+    // As the SDK does, read which session a transcript belongs to from its first sessionId.
     const owner = Arr.findFirst(contents.split("\n"), (line) => decodeSessionRecord(line));
     if (!sourcePresent && Option.getOrUndefined(owner)?.sessionId !== input.sessionId) {
       return yield* new ClaudeSessionRelocationError({ reason: "foreign-session", path: newFile });
@@ -212,10 +210,17 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
         ),
       );
     }
-    // Like Claude, end a torn last line before appending; only a whole last line counts as the record.
-    if (!`\n${contents}`.endsWith(`\n${record}`)) {
+    // Like Claude, end a torn last line before appending; a whole last line that is the record
+    // needs only its newline.
+    if (!`\n${contents}`.endsWith(`\n${record}\n`)) {
       yield* fileSystem
-        .writeFileString(newFile, `${/[^\n]$/.test(contents) ? "\n" : ""}${record}`, { flag: "a" })
+        .writeFileString(
+          newFile,
+          `\n${contents}`.endsWith(`\n${record}`)
+            ? "\n"
+            : `${/[^\n]$/.test(contents) ? "\n" : ""}${record}\n`,
+          { flag: "a" },
+        )
         .pipe(
           Effect.tapError((cause) =>
             Effect.logWarning("orchestration-v2.claude-relocation.record-failed", { cause }),

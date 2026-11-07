@@ -234,6 +234,7 @@ it.effect.each([
   { name: "after the transcript rename", lost: "subagent-folder", written: 0 },
   { name: "before the relocated record", lost: "record", written: 0 },
   { name: "partway through the relocated record", lost: "record", written: 20 },
+  { name: "before the relocated record's newline", lost: "record", written: -1 },
 ])("finishes a move the process lost $name when the effect replays", ({ lost, written }) =>
   Effect.gen(function* () {
     const context = yield* setup();
@@ -267,9 +268,10 @@ it.effect.each([
 
     const relocatedCwd = (yield* fileSystem.realPath(context.newFolder)).normalize("NFC");
     const record = `${JSON.stringify({ type: "relocated", sessionId, relocatedCwd })}\n`;
+    const fragment = written === 0 ? "" : `${record.slice(0, written)}\n`;
     assert.equal(
       yield* fileSystem.readFileString(newFile),
-      `${transcript}${written === 0 ? "" : `${record.slice(0, written)}\n`}${record}`,
+      `${transcript}${fragment}${fragment === record ? "" : record}`,
     );
     assert.isTrue(yield* fileSystem.exists(path.join(newDir, sessionId, "agent-1.jsonl")));
     assert.isFalse(yield* fileSystem.exists(oldSubagents));
@@ -349,6 +351,7 @@ it.effect.each([
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, flaky),
       Effect.provideService(HostProcess.Environment, {}),
+      Effect.provideService(HostProcess.Platform, "darwin"),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({

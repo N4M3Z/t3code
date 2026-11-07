@@ -1411,11 +1411,11 @@ function isTurnItemAtOrBeforeRun(input: {
   readonly runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>;
   readonly sourceRunOrdinal: number;
 }): boolean {
+  if (input.item.ordinal > input.boundaryOrdinal) {
+    return false;
+  }
   if (input.item.runId === null) {
-    return (
-      input.historyOrigin === "v1_import" ||
-      (isMoveReceipt(input.item) && input.item.ordinal <= input.boundaryOrdinal)
-    );
+    return input.historyOrigin === "v1_import" || isMoveReceipt(input.item);
   }
   const ordinal = input.runOrdinalById.get(input.item.runId);
   return ordinal !== undefined && ordinal <= input.sourceRunOrdinal;

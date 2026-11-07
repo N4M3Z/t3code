@@ -76,6 +76,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProjectMutationError,
+  ThreadMoveError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
   RelayClientInstallFailedError,
@@ -219,6 +220,7 @@ import * as ProjectService from "./project/ProjectService.ts";
 import { threadWorkspaceRoot } from "./project/threadWorkspaceRoot.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import * as ScratchThreadPromotion from "./project/ScratchThreadPromotion.ts";
+import * as ThreadMoveService from "./project/ThreadMoveService.ts";
 import { mutateProjectWithClone } from "./project/ProjectMutation.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
@@ -1410,6 +1412,7 @@ export const layerWsRpc = (
       const projectService = yield* ProjectService.ProjectService;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const scratchThreadPromotion = yield* ScratchThreadPromotion.ScratchThreadPromotion;
+      const threadMove = yield* ThreadMoveService.ThreadMoveService;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
@@ -3011,6 +3014,16 @@ export const layerWsRpc = (
                 }),
             ),
           ),
+        [WS_METHODS.threadsMove]: (input) =>
+          startup
+            .enqueueCommand(threadMove.move(input))
+            .pipe(
+              Effect.mapError((cause) =>
+                cause._tag === "ThreadMoveError"
+                  ? cause
+                  : new ThreadMoveError({ message: cause.message, cause }),
+              ),
+            ),
         [WS_METHODS.shellOpenInEditor]: (input) => externalLauncher.launchEditor(input),
         [WS_METHODS.filesystemGetMetadata]: (input) => workspaceFileSystem.getMetadata(input),
         [WS_METHODS.filesystemBrowse]: (input) =>

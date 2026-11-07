@@ -572,6 +572,15 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "scheduled-tasks.move":
+          case "provider-session.relocate-storage":
+            return Effect.fail(
+              new OrchestrationEffectExecutionError({
+                effectId: effect.id,
+                effectType: effect.request.type,
+                cause: "No handler yet.",
+              }),
+            );
         }
       }),
     });

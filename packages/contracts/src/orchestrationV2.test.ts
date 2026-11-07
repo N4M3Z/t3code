@@ -224,7 +224,7 @@ describe("orchestration V2 contracts", () => {
     ).toThrow();
   });
 
-  it("decodes persisted capability snapshots that predate runtimePolicy", () => {
+  it("decodes persisted capability snapshots that predate runtimePolicy and supportsFolderMove", () => {
     const legacyCapabilities = {
       sessions: {
         supportsMultipleProviderThreadsPerSession: false,
@@ -318,12 +318,40 @@ describe("orchestration V2 contracts", () => {
 
     const decoded = decodeOrchestrationV2ProviderCapabilities(legacyCapabilities);
     expect(decoded.runtimePolicy).toEqual({ enforcement: "client-boundary" });
+    expect(decoded.sessions.supportsFolderMove).toBeUndefined();
 
     const explicit = decodeOrchestrationV2ProviderCapabilities({
       ...legacyCapabilities,
       runtimePolicy: { enforcement: "native" },
     });
     expect(explicit.runtimePolicy).toEqual({ enforcement: "native" });
+  });
+
+  it("keeps a system notice's previous folder in stored JSON and decodes notices without one", () => {
+    const stored = {
+      id: "notice",
+      threadId: "thread-1",
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 3,
+      status: "completed",
+      title: null,
+      startedAt: DateTime.formatIso(now),
+      completedAt: DateTime.formatIso(now),
+      updatedAt: DateTime.formatIso(now),
+      type: "system_notice",
+      message: "The next turn runs in /repo/b.",
+    };
+    expect(decodeOrchestrationV2TurnItemJson(stored)).not.toHaveProperty("previousFolder");
+    const moved = decodeOrchestrationV2TurnItemJson({ ...stored, previousFolder: "/repo/a" });
+    expect(encodeOrchestrationV2TurnItemJson(moved)).toEqual({
+      ...stored,
+      previousFolder: "/repo/a",
+    });
   });
 
   it.each(["  indented prompt\n", "\n \t\n"])(

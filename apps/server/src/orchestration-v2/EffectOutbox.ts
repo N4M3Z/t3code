@@ -4,6 +4,9 @@ import {
   CommandId,
   MessageId,
   NodeId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   ProviderSessionId,
   RunAttemptId,
   ProviderApprovalDecision,
@@ -39,6 +42,15 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerSessionId: ProviderSessionId,
     detail: Schema.optional(Schema.String),
     revokeMcpCredential: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-session.relocate-storage"),
+    driver: ProviderDriverKind,
+    providerInstanceId: ProviderInstanceId,
+    providerThreadId: ProviderThreadId,
+    nativeSessionId: Schema.String,
+    oldFolder: Schema.String,
+    newFolder: Schema.String,
   }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.start"),
@@ -97,6 +109,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("scheduled-tasks.cleanup"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("scheduled-tasks.move"),
+    threadIds: Schema.Array(ThreadId),
+    projectId: ProjectId,
   }),
   Schema.Struct({
     type: Schema.Literal("terminal.cleanup"),

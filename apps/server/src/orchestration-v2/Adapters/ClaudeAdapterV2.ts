@@ -1399,12 +1399,10 @@ export const layerQueryRunner: Layer.Layer<
                     queued
                       ? Effect.sync(() => onQueued?.())
                       : Effect.fail(
-                          new ClaudeAgentSdkQueryRunnerError({
-                            method: "offer",
-                            cause: new Error(
-                              "Claude prompt queue closed before the prompt was queued.",
-                            ),
-                          }),
+                          queryRunnerError(
+                            new Error("Claude prompt queue closed before the prompt was queued."),
+                            "offer",
+                          ),
                         ),
                   ),
                 ),
@@ -11405,7 +11403,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             });
             const recordRunningTurn = Effect.gen(function* () {
               // A turn that settled before its offer returned keeps its terminal record last.
-              if ((yield* Ref.get(activeTurn)) !== context) return;
+              if (
+                (yield* Ref.get(activeTurn)) !== context ||
+                (yield* Ref.get(queryContext)) !== querySession
+              )
+                return;
               yield* emitProviderEvent({
                 type: "provider_turn.updated",
                 driver: CLAUDE_PROVIDER,
@@ -11427,9 +11429,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               yield* Effect.uninterruptibleMask((restore) =>
                 restore(querySession.query.offer(userMessage, accept)).pipe(
                   Effect.tap(() => Effect.sync(accept)),
-                  Effect.andThen(recordRunningTurn),
-                  Effect.onError(() =>
-                    context.accepted ? recordRunningTurn.pipe(Effect.ignore) : releaseTurn,
+                  Effect.onExit(() =>
+                    context.accepted
+                      ? sdkMessageLock.withPermits(1)(recordRunningTurn)
+                      : releaseTurn,
                   ),
                 ),
               );

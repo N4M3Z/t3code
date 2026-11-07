@@ -31,7 +31,8 @@ import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 import "~/index.css";
 
-import { environmentThreadDetails } from "../../state/threads";
+import { environmentProjects } from "../../state/projects";
+import { environmentThreadDetails, environmentThreadShells } from "../../state/threads";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
@@ -1602,8 +1603,8 @@ describe("MessagesTimeline file links", () => {
         {...baseProps()}
         routeThreadKey="environment-local:thread-file-links"
         timelineEntries={entries}
-        workspaceRoot="/repo-w"
-        markdownCwd="/repo-w"
+        workspaceRoot="/repo-w/app"
+        markdownCwd="/repo-w/app"
         turnDiffSummaries={[
           {
             runId: RunId.make("run-1"),
@@ -1618,6 +1619,14 @@ describe("MessagesTimeline file links", () => {
         {...props}
       />
     );
+    using _threadShell = vi
+      .spyOn(environmentThreadShells, "threadShellAtom")
+      .mockReturnValue(
+        Atom.make({ environmentId: ENVIRONMENT_ID, projectId: "project-w" }) as never,
+      );
+    using _project = vi
+      .spyOn(environmentProjects, "projectAtom")
+      .mockReturnValue(Atom.make({ repositoryIdentity: { rootPath: "/repo-w" } }) as never);
     await using screen = await renderElement(ui({ runs: [run("run-1")] }));
     using openFile = vi
       .spyOn(useRightPanelStore.getState(), "openFile")
@@ -1657,5 +1666,18 @@ describe("MessagesTimeline file links", () => {
     expect(fileMenu.targets.map(resolveFileContextMenuAbsolutePath)).toEqual([
       "/repo-a/app/kept.txt",
     ]);
+
+    // Without a recorded root, only a row in the current folder borrows the current root.
+    for (const [folder, target] of [
+      [{ cwd: "/repo-w/app" }, "/repo-w/app/kept.txt"],
+      [{ cwd: "/repo-old" }, "/repo-old/app/kept.txt"],
+    ] as const) {
+      await screen.rerender(ui({ runs: [run("run-1", folder)] }));
+      await vi.waitFor(() => {
+        fileMenu.targets = [];
+        screen.button(/^kept\.txt/).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+        expect(fileMenu.targets.map(resolveFileContextMenuAbsolutePath)).toEqual([target]);
+      });
+    }
   });
 });

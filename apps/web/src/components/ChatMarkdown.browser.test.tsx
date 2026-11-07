@@ -364,24 +364,27 @@ describe("ChatMarkdown workspace file opens", () => {
 
     expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/elsewhere/b.md", 9);
     expect(workspaceSearch).toHaveBeenCalledOnce();
-  });
 
-  it("opens the literal file for a link with a recorded run folder instead of a search match", async () => {
-    setup();
-    workspaceSearch.mockResolvedValue(
-      AsyncResult.success({ entries: [{ path: "notes/a.md", kind: "file" }], truncated: false }),
+    // Recorded in a since-removed folder: opened there, not at the workspace's same-named file.
+    workspaceSearch.mockResolvedValue(result);
+    await screen.rerender(
+      <ChatMarkdown
+        cwd="/school/physics"
+        fileLinkBaseDir="/school/old"
+        text="[Notes](physics/notes/a.md) and [Other](/elsewhere/b.md:9)"
+        threadRef={threadRef}
+      />,
     );
-    await using screen = await renderText("[Notes](a.md)", {
-      cwd: "/school/physics",
-      fileLinkBaseDir: "/school/physics",
+    const recorded = container.querySelector("a")!;
+    expect(recorded.getAttribute("href")).toBe("/school/old/physics/notes/a.md");
+    await act(async () => recorded.click());
+    expect(openFile).toHaveBeenCalledTimes(2);
+    expect(openFile).toHaveBeenLastCalledWith(
       threadRef,
-    });
-    using openFile = vi
-      .spyOn(useRightPanelStore.getState(), "openFile")
-      .mockImplementation(() => {});
-    await act(async () => screen.container.querySelector("a")!.click());
-    expect(workspaceSearch).not.toHaveBeenCalled();
-    expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "a.md", undefined);
+      "/school/old/physics/notes/a.md",
+      undefined,
+    );
+    expect(workspaceSearch).toHaveBeenCalledOnce();
   });
 });
 

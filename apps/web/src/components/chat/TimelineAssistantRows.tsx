@@ -377,11 +377,11 @@ function AssistantChangedFilesSectionInner({
             filePath,
             workspaceRoot: rowFolder?.cwd ?? ctx.workspaceRoot,
             repositoryRoot:
-              rowFolder !== undefined
-                ? rowFolder.repositoryRoot
-                : thread?.worktreePath == null
-                  ? activeProject?.repositoryIdentity?.rootPath
-                  : undefined,
+              rowFolder?.repositoryRoot ??
+              ((rowFolder === undefined || rowFolder.cwd === ctx.workspaceRoot) &&
+              thread?.worktreePath == null
+                ? activeProject?.repositoryIdentity?.rootPath
+                : undefined),
           },
           event,
         )

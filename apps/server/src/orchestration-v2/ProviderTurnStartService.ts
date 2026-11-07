@@ -31,6 +31,7 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { previousFolderAfter } from "../project/ThreadMoveReceipt.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
@@ -147,6 +148,7 @@ export const layer: Layer.Layer<
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
   | ProviderAuthService.ProviderAuthService
+  | RepositoryIdentityResolver.RepositoryIdentityResolver
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
@@ -163,6 +165,7 @@ export const layer: Layer.Layer<
     const path = yield* Path.Path;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
+    const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -1510,11 +1513,8 @@ export const layer: Layer.Layer<
         updatedAt: now,
       };
       const repositoryRoot =
-        projection.thread.worktreePath === null
-          ? (yield* projects.getById(projection.thread.projectId).pipe(
-              Effect.map(Option.getOrUndefined),
-              Effect.orElseSucceed(() => undefined),
-            ))?.repositoryIdentity?.rootPath
+        projection.thread.worktreePath === null && resolvedRuntimePolicy.cwd !== null
+          ? (yield* repositoryIdentities.resolve(resolvedRuntimePolicy.cwd))?.rootPath
           : undefined;
       const runningRun: OrchestrationV2Run = {
         ...run,

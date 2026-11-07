@@ -2697,28 +2697,27 @@ export function deriveRunFolderByRunId(signature: string): ReadonlyMap<RunId, Ti
   );
 }
 
-export function receiptFoldersSignature(rows: ReadonlyArray<MessagesTimelineRow>): string {
-  return JSON.stringify(
-    rows.flatMap((row, index) => {
-      const item = row.kind === "work" ? row.groupedEntries[0]?.structuredPayload : undefined;
-      return item?.type === "system_notice" && item.previousFolder !== undefined
-        ? [[index, { cwd: item.previousFolder }]]
-        : [];
-    }),
-  );
-}
-
-export function deriveReceiptFolders(
-  signature: string,
-): ReadonlyArray<readonly [number, TimelineRunFolder]> {
-  return JSON.parse(signature) as Array<[number, TimelineRunFolder]>;
+/** Receipts are read before display filtering, so a hidden one still covers the rows before it. */
+export function receiptFolderByEntryId(
+  entries: ReadonlyArray<TimelineEntry>,
+): ReadonlyMap<string, TimelineRunFolder> {
+  const byEntryId = new Map<string, TimelineRunFolder>();
+  let folder: TimelineRunFolder | undefined;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (folder !== undefined) byEntryId.set(entry.id, folder);
+    const item = entry.kind === "work" ? entry.entry.structuredPayload : undefined;
+    if (item?.type === "system_notice" && item.previousFolder !== undefined) {
+      folder = { cwd: item.previousFolder };
+    }
+  }
+  return byEntryId;
 }
 
 export function timelineRowFolder(
   row: MessagesTimelineRow,
-  index: number,
   runFolderByRunId: ReadonlyMap<RunId, TimelineRunFolder>,
-  receiptFolders: ReadonlyArray<readonly [number, TimelineRunFolder]>,
+  receiptFolderByEntryId: ReadonlyMap<string, TimelineRunFolder>,
 ): TimelineRunFolder | undefined {
   const runId =
     row.kind === "message"
@@ -2730,9 +2729,17 @@ export function timelineRowFolder(
           : row.kind === "work-live"
             ? row.entry.runId
             : null;
+  const entryId =
+    row.kind === "message"
+      ? row.id
+      : row.kind === "work"
+        ? row.groupedEntries[0]?.id
+        : row.kind === "work-live"
+          ? row.entry.id
+          : undefined;
   return (
     (runId == null ? undefined : runFolderByRunId.get(runId)) ??
-    receiptFolders.find(([receiptIndex]) => receiptIndex > index)?.[1]
+    (entryId === undefined ? undefined : receiptFolderByEntryId.get(entryId))
   );
 }
 

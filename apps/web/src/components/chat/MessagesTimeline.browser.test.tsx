@@ -16,6 +16,7 @@ import {
   ThreadId,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
   createRef,
@@ -45,6 +46,7 @@ import { remarkThoughtPreview } from "./TimelineWorkEntryRow.logic";
 import { parseMarkdownWithMath } from "@t3tools/shared/markdownMath";
 import { collectThreadFindRanges } from "./threadFindHighlights";
 import { toastManager } from "../ui/toast";
+import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { useRightPanelStore } from "~/rightPanelStore";
 import type { CitedHistory } from "./citationProcedure";
 import type { TimelineNavigation } from "./timelineViewport";
@@ -1694,5 +1696,14 @@ describe("MessagesTimeline file links", () => {
         expect(fileMenu.targets.map(resolveFileContextMenuAbsolutePath)).toEqual([target]);
       });
     }
+
+    expect(screen.text()).toContain("Moved.");
+    onTestFinished(() => __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS));
+    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, toolCallVisibility: "zen" });
+    await screen.rerender(ui({ runs: [run("run-1")] }));
+    await vi.waitFor(() => expect(screen.text()).not.toContain("Moved."));
+    expect(screen.container.querySelector("a.chat-markdown-file-link")?.getAttribute("href")).toBe(
+      "/repo-before/notes.txt",
+    );
   });
 });

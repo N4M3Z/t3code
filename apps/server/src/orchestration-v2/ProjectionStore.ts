@@ -1378,17 +1378,32 @@ function makeForkMarkerTurnItem(input: {
   };
 }
 
+type ForkHistoryItem = Pick<OrchestrationV2TurnItem, "runId" | "ordinal" | "type"> & {
+  readonly previousFolder?: string | undefined;
+};
+
+// Run-less move receipts follow the rows they cover into the fork, up to the SQL fork boundary.
 function isTurnItemAtOrBeforeRun(input: {
   readonly historyOrigin: OrchestrationV2ThreadProjection["thread"]["historyOrigin"];
-  readonly itemRunId: OrchestrationV2TurnItem["runId"];
+  readonly items: ReadonlyArray<ForkHistoryItem>;
   readonly runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>;
   readonly sourceRunOrdinal: number;
-}): boolean {
-  if (input.itemRunId === null) {
-    return input.historyOrigin === "v1_import";
+}): (item: ForkHistoryItem) => boolean {
+  const runAtOrBefore = (runId: OrchestrationV2TurnItem["runId"]) => {
+    const ordinal = runId === null ? undefined : input.runOrdinalById.get(runId);
+    return ordinal !== undefined && ordinal <= input.sourceRunOrdinal;
+  };
+  let boundaryOrdinal = -1;
+  for (const item of input.items) {
+    if (runAtOrBefore(item.runId) && item.ordinal > boundaryOrdinal) boundaryOrdinal = item.ordinal;
   }
-  const ordinal = input.runOrdinalById.get(input.itemRunId);
-  return ordinal !== undefined && ordinal <= input.sourceRunOrdinal;
+  return (item) =>
+    item.runId === null
+      ? input.historyOrigin === "v1_import" ||
+        (item.type === "system_notice" &&
+          item.previousFolder !== undefined &&
+          item.ordinal <= boundaryOrdinal)
+      : runAtOrBefore(item.runId);
 }
 
 function visibleTurnItemsThroughRun(input: {
@@ -1401,6 +1416,12 @@ function visibleTurnItemsThroughRun(input: {
   }
 
   const runOrdinalById = new Map(input.sourceProjection.runs.map((run) => [run.id, run.ordinal]));
+  const inheritedByFork = isTurnItemAtOrBeforeRun({
+    historyOrigin: input.sourceProjection.thread.historyOrigin,
+    items: input.sourceProjection.turnItems,
+    runOrdinalById,
+    sourceRunOrdinal: sourceRun.ordinal,
+  });
   const inheritedPrefix = input.sourceProjection.visibleTurnItems
     .filter(
       (row) => row.item.threadId !== input.sourceProjection.thread.id || row.item.type === "fork",
@@ -1422,12 +1443,7 @@ function visibleTurnItemsThroughRun(input: {
       ) {
         return false;
       }
-      return isTurnItemAtOrBeforeRun({
-        historyOrigin: input.sourceProjection.thread.historyOrigin,
-        itemRunId: item.runId,
-        runOrdinalById,
-        sourceRunOrdinal: sourceRun.ordinal,
-      });
+      return inheritedByFork(item);
     }),
   );
 
@@ -2951,6 +2967,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                           WHERE source_thread.thread_id = item.thread_id
                             AND json_extract(source_thread.payload_json, '$.historyOrigin') = 'v1_import'
                         )
+                      )
+                      OR (
+                        item.run_id IS NULL
+                        AND item.type = 'system_notice'
+                        AND json_extract(item.payload_json, '$.previousFolder') IS NOT NULL
                       )
                       OR run.ordinal <= (
                         SELECT required_run.ordinal
@@ -5720,6 +5741,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       readonly attemptStatus?: string | null;
       readonly persistentOutput?: boolean;
       readonly deferredWork?: OrchestrationV2TurnItem["deferredWork"];
+      readonly previousFolder?: string;
     };
     type TimelineIndexRow = {
       readonly sourceThreadId: ThreadId;
@@ -5752,6 +5774,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           input_intent: NonNullable<TimelineIndexItem["inputIntent"]> | null;
           created_by: "user" | "agent" | "system" | null;
           message_id: string | null;
+          previous_folder: string | null;
           status: OrchestrationV2TurnItem["status"];
           ordinal: number;
           persistent_output: number;
@@ -5765,7 +5788,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           } AS persistent_output,
           CASE WHEN item.type = 'user_message' THEN json_extract(item.payload_json, '$.inputIntent') END AS input_intent,
           CASE WHEN item.type = 'user_message' THEN json_extract(item.payload_json, '$.createdBy') END AS created_by,
-          CASE WHEN item.type IN ('user_message', 'assistant_message') THEN json_extract(item.payload_json, '$.messageId') END AS message_id
+          CASE WHEN item.type IN ('user_message', 'assistant_message') THEN json_extract(item.payload_json, '$.messageId') END AS message_id,
+          CASE WHEN item.type = 'system_notice' THEN json_extract(item.payload_json, '$.previousFolder') END AS previous_folder
         FROM orchestration_v2_projection_turn_items AS item
         ${
           includePersistentOutput
@@ -5796,6 +5820,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ...(row.input_intent === null ? {} : { inputIntent: row.input_intent }),
           ...(row.created_by === null ? {} : { createdBy: row.created_by }),
           ...(row.message_id === null ? {} : { messageId: MessageId.make(row.message_id) }),
+          ...(row.previous_folder === null ? {} : { previousFolder: row.previous_folder }),
         }));
         const local: Array<TimelineIndexRow> = items.map((item) => ({
           sourceThreadId: threadId,
@@ -5822,6 +5847,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         if (sourceRun !== undefined) {
           const ordinals = new Map(source.records.runs.map((run) => [run.id, run.ordinal]));
           const sourceItems = source.local.map((row) => row.item);
+          const inheritedByFork = isTurnItemAtOrBeforeRun({
+            historyOrigin: source.records.thread.historyOrigin,
+            items: sourceItems,
+            runOrdinalById: ordinals,
+            sourceRunOrdinal: sourceRun.ordinal,
+          });
           inherited = [
             ...source.visible.filter(
               (row) => row.item.threadId !== fork.threadId || row.item.type === "fork",
@@ -5832,13 +5863,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   item: row.item,
                   attempts: source.records.attempts,
                   items: sourceItems,
-                }) &&
-                isTurnItemAtOrBeforeRun({
-                  historyOrigin: source.records.thread.historyOrigin,
-                  itemRunId: row.item.runId,
-                  runOrdinalById: ordinals,
-                  sourceRunOrdinal: sourceRun.ordinal,
-                }),
+                }) && inheritedByFork(row.item),
             ),
           ].map((row) => ({ ...row, visibility: "inherited" }));
         }

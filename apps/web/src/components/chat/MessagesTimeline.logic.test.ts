@@ -26,9 +26,8 @@ import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
-  deriveReceiptFolders,
   deriveRunFolderByRunId,
-  receiptFoldersSignature,
+  receiptFolderByEntryId,
   runFoldersSignature,
   timelineRowFolder,
   timelineTurnFoldRunIdsByEntryId,
@@ -4582,9 +4581,10 @@ describe("timelineRowFolder", () => {
         ],
       ),
     );
-    const folder = (shape: MessagesTimelineRow) => timelineRowFolder(shape, 0, folders, [])?.cwd;
+    const receipts = receiptFolderByEntryId([]);
+    const folder = (shape: MessagesTimelineRow) => timelineRowFolder(shape, folders, receipts)?.cwd;
 
-    expect(timelineRowFolder(message("run-a"), 0, folders, [])).toEqual({
+    expect(timelineRowFolder(message("run-a"), folders, receipts)).toEqual({
       cwd: "/repo/app",
       repositoryRoot: "/repo",
     });
@@ -4603,34 +4603,66 @@ describe("timelineRowFolder", () => {
     expect(folder(row({ kind: "context-compaction" }))).toBeUndefined();
   });
 
-  it("resolves a row without a run folder against the first move receipt after it", () => {
+  it("resolves rows without a run folder against the first move receipt after them", () => {
+    const base = {
+      ...makeStreamingTimelineFixture().visibleTurnItems[0]!,
+      visibility: "inherited" as const,
+    };
+    const item = (id: string, runId: RunId | null, fields: object) =>
+      ({ ...base.item, ...fields, id: TurnItemId.make(id), runId }) as OrchestrationV2TurnItem;
+    const user = (id: string, runId: RunId | null = null) =>
+      item(id, runId, {
+        type: "user_message",
+        messageId: MessageId.make(id),
+        text: id,
+        attachments: [],
+        inputIntent: "turn_start",
+        createdBy: "user",
+        creationSource: "web",
+      });
+    const notice = (id: string, previousFolder?: string) =>
+      item(id, null, { type: "system_notice", message: id, previousFolder });
+    const items = [
+      user("imported"),
+      user("legacy", RunId.make("run-legacy")),
+      user("in-c", RunId.make("run-c")),
+      notice("move-a", "/a"),
+      user("after-a"),
+      notice("plain"),
+      notice("move-b", "/b"),
+      user("after-b"),
+    ];
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: items.map((item, position) => ({
+        ...base,
+        item,
+        position,
+        sourceItemId: item.id,
+      })),
+      optimisticMessages: [],
+    });
     const folders = deriveRunFolderByRunId(
       runFoldersSignature([
         { id: RunId.make("run-c"), cwd: "/c" },
         { id: RunId.make("run-legacy") },
       ]),
     );
-    const notice = (previousFolder?: string) =>
-      row({
-        kind: "work",
-        groupedEntries: [{ structuredPayload: { type: "system_notice", previousFolder } }],
-      });
-    const rows = [
-      message(null),
-      message("run-legacy"),
-      message("run-c"),
-      notice("/a"),
-      message(null),
-      notice(),
-      notice("/b"),
-      message(null),
-    ];
-    const receipts = deriveReceiptFolders(receiptFoldersSignature(rows));
+    const receipts = receiptFolderByEntryId(entries);
 
-    expect(
-      rows.flatMap((shape, index) =>
-        shape.kind === "message" ? [timelineRowFolder(shape, index, folders, receipts)?.cwd] : [],
-      ),
-    ).toEqual(["/a", "/a", "/c", "/b", undefined]);
+    for (const toolCallVisibility of ["showAll", "zen"] as const) {
+      const rows = deriveMessagesTimelineRows({
+        timelineEntries: entries,
+        isWorking: false,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        toolCallVisibility,
+      });
+      expect(rows.some((row) => row.kind === "work")).toBe(toolCallVisibility === "showAll");
+      expect(
+        rows.flatMap((row) =>
+          row.kind === "message" ? [timelineRowFolder(row, folders, receipts)?.cwd] : [],
+        ),
+      ).toEqual(["/a", "/a", "/c", "/b", undefined]);
+    }
   });
 });

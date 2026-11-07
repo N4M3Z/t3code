@@ -6915,6 +6915,164 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect("inherits a native source's move receipts before the fork point", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const projectId = ProjectId.make("project:projection-fork-receipt");
+      const sourceThreadId = ThreadId.make("thread:projection-fork-receipt:source");
+      const targetThreadId = ThreadId.make("thread:projection-fork-receipt:target");
+      const legacyRunId = RunId.make("run:projection-fork-receipt:legacy");
+      const movedRunId = RunId.make("run:projection-fork-receipt:moved");
+
+      for (const [threadId, forkedFrom] of [
+        [sourceThreadId, null],
+        [targetThreadId, { type: "run", threadId: sourceThreadId, runId: movedRunId }],
+      ] as const) {
+        yield* projectionStore.apply({
+          id: EventId.make(`event:projection-fork-receipt:created:${threadId}`),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId,
+            title: "Fork receipt",
+            providerInstanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: {
+              parentThreadId: forkedFrom === null ? null : sourceThreadId,
+              relationshipToParent: forkedFrom === null ? null : "fork",
+              rootThreadId: sourceThreadId,
+            },
+            forkedFrom,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+      }
+      for (const [runId, ordinal, folder] of [
+        [legacyRunId, 1, {}],
+        [movedRunId, 2, { cwd: "/b" }],
+      ] as const) {
+        const nodeId = NodeId.make(`node:projection-fork-receipt:${ordinal}`);
+        yield* projectionStore.apply({
+          id: EventId.make(`event:projection-fork-receipt:run:${ordinal}`),
+          type: "run.created",
+          threadId: sourceThreadId,
+          runId,
+          nodeId,
+          driver,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId: sourceThreadId,
+            ordinal,
+            providerInstanceId,
+            modelSelection,
+            providerThreadId: null,
+            userMessageId: MessageId.make(`message:projection-fork-receipt:${ordinal}`),
+            rootNodeId: nodeId,
+            activeAttemptId: null,
+            status: "completed",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: now,
+            checkpointId: null,
+            contextHandoffId: null,
+            ...folder,
+          },
+        });
+      }
+      const applyItem = (suffix: string, runId: RunId | null, ordinal: number) =>
+        projectionStore.apply({
+          id: EventId.make(`event:projection-fork-receipt:item:${suffix}`),
+          type: "turn-item.updated",
+          threadId: sourceThreadId,
+          ...(runId === null ? {} : { runId }),
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`turn-item:projection-fork-receipt:${suffix}`),
+            threadId: sourceThreadId,
+            runId,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal,
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            ...(runId === null
+              ? { type: "system_notice", message: suffix, previousFolder: "/a" }
+              : {
+                  type: "assistant_message",
+                  messageId: MessageId.make(`message:projection-fork-receipt:${suffix}`),
+                  text: suffix,
+                  streaming: false,
+                }),
+          },
+        });
+      yield* applyItem("legacy", legacyRunId, 1);
+      yield* applyItem("receipt", null, 2);
+      yield* applyItem("moved-one", movedRunId, 3);
+      yield* applyItem("moved-two", movedRunId, 4);
+
+      const projection = yield* projectionStore.getThreadProjection(targetThreadId);
+      const shape = (rows: typeof projection.visibleTurnItems) =>
+        rows.map((row) =>
+          row.item.type === "system_notice"
+            ? row.item.previousFolder
+            : row.item.type === "assistant_message"
+              ? row.item.text
+              : row.item.type,
+        );
+      assert.deepEqual(shape(projection.visibleTurnItems), [
+        "legacy",
+        "/a",
+        "moved-one",
+        "moved-two",
+        "fork",
+      ]);
+      assert.isTrue(projection.visibleTurnItems[1]?.visibility === "inherited");
+      assert.deepEqual(
+        projection.runFolders?.map((run) => [run.id, run.cwd]),
+        [[movedRunId, "/b"]],
+      );
+      const timelinePage = yield* projectionStore.getTimelinePage(targetThreadId, {
+        view: "activity",
+        limit: 10,
+      });
+      assert.deepEqual(timelinePage.items, projection.visibleTurnItems);
+      const window = (rowLimit: number, anchorItemId?: TurnItemId) =>
+        Effect.map(
+          projectionStore.getThreadSnapshotWindow(targetThreadId, { rowLimit, anchorItemId }),
+          (snapshot) => shape(snapshot.projection.visibleTurnItems),
+        );
+      assert.deepEqual(yield* window(2), ["moved-one", "moved-two", "fork"]);
+      assert.deepEqual(yield* window(3), ["/a", "moved-one", "moved-two", "fork"]);
+      assert.deepEqual(
+        yield* window(2, TurnItemId.make("turn-item:projection-fork-receipt:moved-one")),
+        ["/a", "moved-one", "fork"],
+      );
+    }),
+  );
+
   it.effect("removes rolled back runs from the active visible projection", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;

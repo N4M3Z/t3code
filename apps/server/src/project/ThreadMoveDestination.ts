@@ -14,7 +14,6 @@ import {
   type ThreadMoveResult,
 } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
-import { pointsAtLinkedWorktree } from "@t3tools/shared/devHome";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
@@ -99,10 +98,16 @@ const namedThread = (thread: ThreadMoveShell) => ({ threadId: thread.id, title: 
 const quote = (title: string) => `"${title}"`;
 const isArchived = (project: Project) => project.archivedAt != null;
 
+const unreadable = (target: string) => (cause: unknown) =>
+  new ThreadMoveError({ message: `Could not read ${target}.`, cause });
 const kindOf = (fileSystem: ThreadMoveProbes["fileSystem"], target: string) =>
   fileSystem.stat(target).pipe(
     Effect.map((info) => info.type),
-    Effect.orElseSucceed(() => null),
+    Effect.catchIf(
+      (error) => error.reason._tag === "NotFound",
+      () => Effect.succeed(null),
+    ),
+    Effect.mapError(unreadable(target)),
   );
 
 const matchProject = (folder: string, matches: ReadonlyArray<Project>) => {
@@ -304,15 +309,24 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     for (const directory of input.managedWorktreeDirectories) {
       if (isWithinRoot(path, folder, yield* resolve(directory))) return worktreeRefusal;
     }
-    // `.jj/repo` is a folder in a default jj workspace and a file in the others.
+    // A linked worktree's git dir holds `commondir`; a submodule's or a separate main git dir
+    // does not. `.jj/repo` is a folder in a default jj workspace and a file in the others.
     for (let directory = folder; ; directory = path.dirname(directory)) {
-      const gitFile = yield* fileSystem
-        .readFileString(path.join(directory, ".git"))
-        .pipe(Effect.orElseSucceed(() => ""));
-      if (
-        pointsAtLinkedWorktree(gitFile, path) ||
-        (yield* kindOf(fileSystem, path.join(directory, ".jj", "repo"))) !== null
-      ) {
+      const gitPath = path.join(directory, ".git");
+      if ((yield* kindOf(fileSystem, gitPath)) === "File") {
+        const pointer = yield* fileSystem
+          .readFileString(gitPath)
+          .pipe(Effect.mapError(unreadable(gitPath)));
+        const gitdir = /^\s*gitdir:\s*(.+?)\s*$/m.exec(pointer)?.[1];
+        if (
+          gitdir !== undefined &&
+          (yield* kindOf(fileSystem, path.join(path.resolve(directory, gitdir), "commondir"))) !==
+            null
+        ) {
+          return worktreeRefusal;
+        }
+      }
+      if ((yield* kindOf(fileSystem, path.join(directory, ".jj", "repo"))) !== null) {
         return worktreeRefusal;
       }
       if (path.dirname(directory) === directory) break;

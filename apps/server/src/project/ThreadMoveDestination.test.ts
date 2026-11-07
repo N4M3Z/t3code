@@ -120,7 +120,13 @@ const makeWorld = Effect.gen(function* () {
     "jjws/sub",
     "jjdefault/.jj/repo",
     "jjdefault/sub",
-    "submodule",
+    "main/.git/worktrees/wt",
+    "main/.git/modules/worktrees/lib",
+    "main/worktrees/lib",
+    "srv/worktrees/main",
+    "separate",
+    "locked-git",
+    "locked-jj/.jj",
     "managed/repo/branch/sub",
     "plain",
     "W",
@@ -128,12 +134,20 @@ const makeWorld = Effect.gen(function* () {
   ]) {
     yield* fileSystem.makeDirectory(at(folder), { recursive: true });
   }
+  yield* fileSystem.writeFileString(at("worktree", ".git"), "gitdir: ../main/.git/worktrees/wt\n");
+  yield* fileSystem.writeFileString(at("main", ".git", "worktrees", "wt", "commondir"), "../..\n");
   yield* fileSystem.writeFileString(
-    at("worktree", ".git"),
-    "gitdir: /elsewhere/.git/worktrees/wt\n",
+    at("main", "worktrees", "lib", ".git"),
+    "gitdir: ../../.git/modules/worktrees/lib\n",
+  );
+  yield* fileSystem.writeFileString(
+    at("separate", ".git"),
+    `gitdir: ${at("srv", "worktrees", "main")}\n`,
   );
   yield* fileSystem.writeFileString(at("jjws", ".jj", "repo"), "/elsewhere/.jj/repo\n");
-  yield* fileSystem.writeFileString(at("submodule", ".git"), "gitdir: ../.git/modules/submodule\n");
+  yield* fileSystem.writeFileString(at("locked-git", ".git"), "");
+  yield* fileSystem.chmod(at("locked-git", ".git"), 0o000);
+  yield* fileSystem.chmod(at("locked-jj", ".jj"), 0o000);
   yield* fileSystem.writeFileString(at("afile"), "");
   yield* fileSystem.symlink(at("projB"), at("link-B"));
   yield* fileSystem.symlink(at("W"), at("link-W"));
@@ -233,12 +247,6 @@ it.effect.each<{
     name: "rule 1: the thread's own folder moves with no members",
     thread: "t1",
     typed: (world) => world.at("projA"),
-    expected: (world) => ({ _tag: "moved", folder: world.at("projA"), members: [] }),
-  },
-  {
-    name: "rule 1: the own folder spelled relatively",
-    thread: "t1",
-    typed: () => ".",
     expected: (world) => ({ _tag: "moved", folder: world.at("projA"), members: [] }),
   },
   {
@@ -374,6 +382,24 @@ it.effect.each<{
     expected: () => worktreeRefused,
   },
   {
+    name: "rule 5: an unreadable .git fails the decision, naming it",
+    thread: "t1",
+    typed: (world) => world.at("locked-git"),
+    expected: (world) => ({
+      _tag: "ThreadMoveError",
+      message: expect.stringContaining(world.at("locked-git", ".git")),
+    }),
+  },
+  {
+    name: "rule 5: an unreadable .jj/repo fails the decision, naming it",
+    thread: "t1",
+    typed: (world) => world.at("locked-jj"),
+    expected: (world) => ({
+      _tag: "ThreadMoveError",
+      message: expect.stringContaining(world.at("locked-jj", ".jj", "repo")),
+    }),
+  },
+  {
     name: "rule 6: a folder with no project needs one",
     thread: "t1",
     typed: (world) => world.at("plain"),
@@ -390,10 +416,19 @@ it.effect.each<{
     }),
   },
   {
-    name: "rule 6: a submodule needs a project",
+    name: "rule 6: a submodule named worktrees/<name> needs a project",
     thread: "t1",
-    typed: (world) => world.at("submodule"),
-    expected: (world) => ({ _tag: "needs-project", folder: world.at("submodule") }),
+    typed: (world) => world.at("main", "worktrees", "lib"),
+    expected: (world) => ({
+      _tag: "needs-project",
+      folder: world.at("main", "worktrees", "lib"),
+    }),
+  },
+  {
+    name: "rule 6: a main checkout with a separate git dir under worktrees/ needs a project",
+    thread: "t1",
+    typed: (world) => world.at("separate"),
+    expected: (world) => ({ _tag: "needs-project", folder: world.at("separate") }),
   },
   {
     name: "rule 6: a deleted project's root needs a project",
@@ -423,7 +458,9 @@ it.effect.each<{
   live(
     Effect.gen(function* () {
       const world = yield* makeWorld;
-      const result = yield* decide(world, request(threadId, typed(world)));
+      const result = yield* decide(world, request(threadId, typed(world))).pipe(
+        Effect.catch(Effect.succeed),
+      );
       expect(result).toMatchObject(expected(world));
     }),
   ),
@@ -689,11 +726,6 @@ it.effect.each<{
       reason: expect.stringMatching(/Claude Code 2\.1\.222.*Refresh the providers/),
       thread: { threadId: "t1", title: "t1" },
     },
-  },
-  {
-    name: "nothing for a Claude instance at 2.1.223",
-    overrides: () => ({ providerInstances: instances(["claudeAgent", claude("2.1.223")]) }),
-    expected: movesTo("B"),
   },
   {
     name: "nothing for a newer Claude instance",

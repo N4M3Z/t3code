@@ -88,11 +88,13 @@ export function approvalRedirectNotice(input: {
 export function folderMoveBlockReason(input: {
   readonly supported: boolean;
   readonly isLocalDraftThread: boolean;
+  readonly editingQueuedMessage: boolean;
   readonly requestPending: boolean;
   readonly textOnly: boolean;
 }): string | null {
   if (!input.supported) return "Update this environment's T3 Code server to move threads.";
   if (input.isLocalDraftThread) return "Pick the folder in this draft's project picker instead.";
+  if (input.editingQueuedMessage) return "Save or cancel the queued message edit first.";
   if (input.requestPending) return "Answer the pending question or approval first.";
   if (!input.textOnly) return "Remove the attachments and context, then send it again.";
   return null;

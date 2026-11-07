@@ -494,13 +494,13 @@ export function useComposerSend(input: ComposerSendInput) {
       return;
     }
     const sendCtx = composerRef.current?.getSendContext();
-    // `/cd` and `/no` never reach the provider, also while a queued message is being edited.
     const folderMove = parseFolderMoveCommand(promptAtSend);
     if (sendCtx && folderMove) {
       const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
       const blockReason = folderMoveBlockReason({
         supported: config?.environment.capabilities.threadWorkingFolderMove === true,
         isLocalDraftThread,
+        editingQueuedMessage: queuedRunEdit.isEditing,
         requestPending: activePendingProgress !== null || pendingApprovalsRef.current.length > 0,
         textOnly:
           !directAnnotation &&
@@ -535,7 +535,7 @@ export function useComposerSend(input: ComposerSendInput) {
         return;
       }
       sendInFlightRef.current = true;
-      const outcome = await runThreadMove(
+      await runThreadMove(
         {
           threadId: activeThread.id,
           destination: folderMove.command === "cd" ? folderMove.path : null,
@@ -550,27 +550,30 @@ export function useComposerSend(input: ComposerSendInput) {
           };
         },
         async (question) => (await requestConfirmDialog(threadMoveQuestionText(question))) ?? false,
-      ).finally(() => {
-        sendInFlightRef.current = false;
-      });
-      if (outcome === null) return;
-      if (outcome._tag === "refused") {
-        refuse(outcome.reason);
-        return;
-      }
-      if (outcome.members.length === 0) {
-        toastManager.add(
-          stackedThreadToast({ type: "info", title: `Already in ${outcome.folder}.` }),
-        );
-      }
-      if (
-        currentRouteThreadKeyRef.current === routeThreadKey &&
-        promptRef.current === promptAtSend
-      ) {
-        promptRef.current = "";
-        setComposerDraftPrompt(composerDraftTarget, "");
-        composerRef.current?.resetCursorState();
-      }
+      )
+        .then((outcome) => {
+          if (outcome === null) return;
+          if (outcome._tag === "refused") {
+            refuse(outcome.reason);
+            return;
+          }
+          if (outcome.members.length === 0) {
+            toastManager.add(
+              stackedThreadToast({ type: "info", title: `Already in ${outcome.folder}.` }),
+            );
+          }
+          if (
+            currentRouteThreadKeyRef.current === routeThreadKey &&
+            promptRef.current === promptAtSend
+          ) {
+            promptRef.current = "";
+            setComposerDraftPrompt(composerDraftTarget, "");
+            composerRef.current?.resetCursorState();
+          }
+        })
+        .finally(() => {
+          sendInFlightRef.current = false;
+        });
       return;
     }
     // `/side` beats an open question and a plan follow-up, which would send the text to main.

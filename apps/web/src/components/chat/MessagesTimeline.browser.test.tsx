@@ -1588,6 +1588,12 @@ describe("MessagesTimeline file links", () => {
       path: "notes.md",
     };
     const entries = [
+      message("See [notes](notes.txt).", {}, "imported"),
+      work("move-receipt", {
+        itemType: "system_notice",
+        label: "Moved.",
+        structuredPayload: { type: "system_notice", previousFolder: "/repo-before" },
+      }),
       message("See [a](src/a.ts).", { runId: RunId.make("run-1") }, "in-run"),
       message("See [b](src/b.ts).", {}, "runless"),
       message("See [c](src/c.ts).", { runId: RunId.make("run-paged") }, "paged"),
@@ -1641,9 +1647,18 @@ describe("MessagesTimeline file links", () => {
       return openFile.mock.calls.map((call) => call[1]);
     };
     await vi.waitFor(() =>
-      expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(3),
+      expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(4),
     );
-    expect(await opened()).toEqual(["src/a.ts", "src/b.ts", "src/c.ts", "notes.md"]);
+    expect(screen.container.querySelector("a.chat-markdown-file-link")?.getAttribute("href")).toBe(
+      "/repo-before/notes.txt",
+    );
+    expect(await opened()).toEqual([
+      "/repo-before/notes.txt",
+      "src/a.ts",
+      "src/b.ts",
+      "src/c.ts",
+      "notes.md",
+    ]);
 
     await screen.rerender(
       ui({
@@ -1653,6 +1668,7 @@ describe("MessagesTimeline file links", () => {
     );
     await vi.waitFor(async () =>
       expect(await opened()).toEqual([
+        "/repo-before/notes.txt",
         "/repo-a/app/src/a.ts",
         "src/b.ts",
         "/repo-old/src/c.ts",

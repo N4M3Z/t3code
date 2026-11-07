@@ -2697,9 +2697,28 @@ export function deriveRunFolderByRunId(signature: string): ReadonlyMap<RunId, Ti
   );
 }
 
+export function receiptFoldersSignature(rows: ReadonlyArray<MessagesTimelineRow>): string {
+  return JSON.stringify(
+    rows.flatMap((row, index) => {
+      const item = row.kind === "work" ? row.groupedEntries[0]?.structuredPayload : undefined;
+      return item?.type === "system_notice" && item.previousFolder !== undefined
+        ? [[index, { cwd: item.previousFolder }]]
+        : [];
+    }),
+  );
+}
+
+export function deriveReceiptFolders(
+  signature: string,
+): ReadonlyArray<readonly [number, TimelineRunFolder]> {
+  return JSON.parse(signature) as Array<[number, TimelineRunFolder]>;
+}
+
 export function timelineRowFolder(
   row: MessagesTimelineRow,
+  index: number,
   runFolderByRunId: ReadonlyMap<RunId, TimelineRunFolder>,
+  receiptFolders: ReadonlyArray<readonly [number, TimelineRunFolder]>,
 ): TimelineRunFolder | undefined {
   const runId =
     row.kind === "message"
@@ -2711,7 +2730,10 @@ export function timelineRowFolder(
           : row.kind === "work-live"
             ? row.entry.runId
             : null;
-  return runId == null ? undefined : runFolderByRunId.get(runId);
+  return (
+    (runId == null ? undefined : runFolderByRunId.get(runId)) ??
+    receiptFolders.find(([receiptIndex]) => receiptIndex > index)?.[1]
+  );
 }
 
 export function handoffRunsSignature(runs: ReadonlyArray<HandoffTimelineRun>): string {

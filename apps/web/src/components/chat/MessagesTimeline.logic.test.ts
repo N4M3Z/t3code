@@ -26,7 +26,9 @@ import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  deriveReceiptFolders,
   deriveRunFolderByRunId,
+  receiptFoldersSignature,
   runFoldersSignature,
   timelineRowFolder,
   timelineTurnFoldRunIdsByEntryId,
@@ -4580,9 +4582,9 @@ describe("timelineRowFolder", () => {
         ],
       ),
     );
-    const folder = (shape: MessagesTimelineRow) => timelineRowFolder(shape, folders)?.cwd;
+    const folder = (shape: MessagesTimelineRow) => timelineRowFolder(shape, 0, folders, [])?.cwd;
 
-    expect(timelineRowFolder(message("run-a"), folders)).toEqual({
+    expect(timelineRowFolder(message("run-a"), 0, folders, [])).toEqual({
       cwd: "/repo/app",
       repositoryRoot: "/repo",
     });
@@ -4599,5 +4601,36 @@ describe("timelineRowFolder", () => {
     expect(folder(message("run-queued"))).toBeUndefined();
     expect(folder(message(null))).toBeUndefined();
     expect(folder(row({ kind: "context-compaction" }))).toBeUndefined();
+  });
+
+  it("resolves a row without a run folder against the first move receipt after it", () => {
+    const folders = deriveRunFolderByRunId(
+      runFoldersSignature([
+        { id: RunId.make("run-c"), cwd: "/c" },
+        { id: RunId.make("run-legacy") },
+      ]),
+    );
+    const notice = (previousFolder?: string) =>
+      row({
+        kind: "work",
+        groupedEntries: [{ structuredPayload: { type: "system_notice", previousFolder } }],
+      });
+    const rows = [
+      message(null),
+      message("run-legacy"),
+      message("run-c"),
+      notice("/a"),
+      message(null),
+      notice(),
+      notice("/b"),
+      message(null),
+    ];
+    const receipts = deriveReceiptFolders(receiptFoldersSignature(rows));
+
+    expect(
+      rows.flatMap((shape, index) =>
+        shape.kind === "message" ? [timelineRowFolder(shape, index, folders, receipts)?.cwd] : [],
+      ),
+    ).toEqual(["/a", "/a", "/c", "/b", undefined]);
   });
 });

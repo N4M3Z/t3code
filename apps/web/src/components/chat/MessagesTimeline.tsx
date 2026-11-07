@@ -87,7 +87,9 @@ import {
   resolveTimelineMinimapHitStripWidth,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
+  deriveReceiptFolders,
   deriveRunFolderByRunId,
+  receiptFoldersSignature,
   runFoldersSignature,
   timelineRowFolder,
   type MessagesTimelineRow,
@@ -1241,7 +1243,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
     });
   });
   const runFolderByRunId = deriveRunFolderByRunId(`${runFoldersSignature(runsProp, runFolders)}`);
-  const renderItem = ({ item }: { item: MessagesTimelineRow }) => (
+  const receiptFolders = deriveReceiptFolders(`${receiptFoldersSignature(rows)}`);
+  const renderItem = ({ item, index }: { item: MessagesTimelineRow; index: number }) => (
     <TimelineRowCtx value={sharedState}>
       <div
         className="messages-timeline-row-frame"
@@ -1255,7 +1258,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
           data-timeline-root="true"
         >
           <AudioPreviewUnmountContext value={onAudioUnmount}>
-            <TimelineRowFolderCtx value={timelineRowFolder(item, runFolderByRunId)}>
+            <TimelineRowFolderCtx
+              value={timelineRowFolder(item, index, runFolderByRunId, receiptFolders)}
+            >
               <TimelineRowContent row={item} />
             </TimelineRowFolderCtx>
           </AudioPreviewUnmountContext>
@@ -1268,6 +1273,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     rowCount: rows.length,
     sharedState,
     runFolderByRunId,
+    receiptFolders,
   };
   const timelineListFooter = (
     <TimelineListFooter

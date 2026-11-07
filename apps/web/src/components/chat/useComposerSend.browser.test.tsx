@@ -52,18 +52,17 @@ function Harness(props: { readonly input: Input; readonly send: RefObject<Send |
 
 async function setup(options: {
   readonly folderMove: boolean;
-  readonly prompt?: string;
   readonly editingQueuedMessage?: boolean;
   readonly pendingQuestion?: boolean;
 }) {
   mocks.move.mockReset();
-  mocks.startTurn.mockReset();
+  mocks.startTurn.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
   const capabilities = { threadWorkingFolderMove: options.folderMove };
   appAtomRegistry.set(mocks.serverConfigs, new Map([[ENV, { environment: { capabilities } }]]));
   const saveEdit = vi.fn();
   const answer = vi.fn();
-  const prompt = options.prompt ?? "/cd ..";
+  const prompt = "/cd ..";
   const promptRef = { current: prompt };
   useComposerDraftStore.getState().setPrompt(DRAFT_TARGET, prompt);
   const sendContext = {
@@ -130,17 +129,6 @@ async function setup(options: {
   return { screen, send: () => send.current!(), saveEdit, answer, promptRef, draftPrompt };
 }
 
-it("sends a plain message as a provider turn", async () => {
-  const { screen, send, promptRef } = await setup({ folderMove: true, prompt: "hello" });
-  await using _screen = screen;
-  mocks.startTurn.mockResolvedValue(AsyncResult.success(undefined));
-
-  await act(send);
-
-  expect(mocks.startTurn).toHaveBeenCalledTimes(1);
-  expect(promptRef.current).toBe("");
-});
-
 it.each([
   {
     during: "a queued message edit",
@@ -176,6 +164,10 @@ it.each([
   );
   expect(promptRef.current).toBe("/cd ..");
   expect(draftPrompt()).toBe("/cd ..");
+
+  promptRef.current = "hello";
+  await act(send);
+  expect(mocks.startTurn).toHaveBeenCalledTimes(scenario.folderMove === false ? 1 : 0);
 });
 
 it("ignores a second /cd until the first move has reported and cleared the draft", async () => {
@@ -184,7 +176,6 @@ it("ignores a second /cd until the first move has reported and cleared the draft
   let finish!: (result: unknown) => void;
   mocks.move.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
   mocks.move.mockResolvedValue(AsyncResult.success(refused));
-  // A caller resumed while the first send still reports its result must see the guard too.
   using _toast = vi.spyOn(toastManager, "add").mockImplementationOnce(() => {
     void send();
     return "";

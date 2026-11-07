@@ -11001,6 +11001,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           if (!shouldResume && turnInput.runtimePolicy.cwd !== null) {
             // Before the prompt goes out: a refused prompt or an early exit must not lose it.
+            yield* (
+              turnInput.recordNativeStorageFolder?.(turnInput.runtimePolicy.cwd) ?? Effect.void
+            );
             yield* emitProviderThreadRoster({
               nativeThreadId,
               providerThread: {

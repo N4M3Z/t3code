@@ -33,7 +33,6 @@ const providerThread = (nativeId: string, recorded?: string) => ({
   ...(recorded === undefined ? {} : { nativeStorageFolder: recorded }),
 });
 
-// Runs 1 and 2 predate run.cwd.
 const runs = [run(4, "/repo/d"), run(1), run(3, "/repo/b"), run(2)];
 
 describe("nativeStorageFolder", () => {
@@ -64,7 +63,7 @@ describe("nativeStorageFolder", () => {
       expected: "/repo/other",
     },
     {
-      name: "uses the row's earliest root scope when its attempts predate nativeThreadId",
+      name: "uses the row's earliest surviving scope event when its attempts predate nativeThreadId",
       providerThread: providerThread("session-a"),
       attempts: [attempt(1, undefined, otherRow), attempt(2), attempt(3), attempt(4)],
       expected: "/repo/a",

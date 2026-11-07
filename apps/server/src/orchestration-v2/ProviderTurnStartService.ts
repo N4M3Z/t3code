@@ -233,7 +233,6 @@ export const layer: Layer.Layer<
       },
     );
 
-    // The projection keeps one root scope row per thread, so earlier runs' folders come from events.
     const readNativeStorageFolder = Effect.fn("ProviderTurnStartService.readNativeStorageFolder")(
       function* (input: {
         readonly threadId: ThreadId;
@@ -243,13 +242,14 @@ export const layer: Layer.Layer<
           "runs",
           "attempts",
         ]);
+        const history = { providerThread: input.providerThread, runs, attempts };
+        const fromRuns = nativeStorageFolder({ ...history, checkpointScopes: [] });
+        if (fromRuns !== undefined) return fromRuns;
         const scopeEvents = yield* eventStore
           .read({ threadId: input.threadId, eventType: "checkpoint-scope.created" })
           .pipe(Stream.runCollect);
         return nativeStorageFolder({
-          providerThread: input.providerThread,
-          runs,
-          attempts,
+          ...history,
           checkpointScopes: Array.from(scopeEvents).flatMap(({ event }) =>
             event.type === "checkpoint-scope.created" ? [event.payload] : [],
           ),

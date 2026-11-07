@@ -2698,32 +2698,56 @@ it.effect("refreshes pull requests after a provider stream exits with an error",
   }),
 );
 
-it.effect("records a provider's input rejection at turn start in the terminal error", () =>
+it.effect("records a provider's input rejection at turn start and the folder it recorded", () =>
   Effect.gen(function* () {
     const rejection = "goal objective must be at most 4000 characters";
-    const { written, observed } = yield* captureRootRunTermination({
+    const ingesting = yield* Deferred.make<void>();
+    const { written, observed, finalEvents } = yield* captureRootRunTermination({
       key: "start-failure:input-rejected",
       shouldFinalizeRun: () => Effect.succeed(true),
-      events: () => Stream.never,
+      // The adapter's update with the folder is still being ingested when the start fails.
+      events: (ids) =>
+        Stream.make({
+          type: "provider_thread.updated" as const,
+          driver,
+          providerThread: {
+            id: ids.providerThreadId,
+            driver,
+            nativeStorageFolder: "/repo/b",
+          } as OrchestrationV2ProviderThread,
+        }),
+      ingestNormalized: () =>
+        Deferred.succeed(ingesting, undefined).pipe(Effect.andThen(Effect.never)),
       afterStart: (closed) => Deferred.succeed(closed, undefined),
       startTurn: (turnInput) =>
-        Effect.fail(
-          new ProviderAdapter.ProviderAdapterTurnStartError({
-            driver,
-            threadId: turnInput.threadId,
-            providerThreadId: turnInput.providerThread.id,
-            runId: turnInput.runId,
-            cause: new CodexAppServerRequestError({
-              code: -32600,
-              errorMessage: rejection,
-              method: "thread/goal/set",
-            }),
-          }),
+        (turnInput.recordNativeStorageFolder?.("/repo/b") ?? Effect.void).pipe(
+          Effect.andThen(Deferred.await(ingesting)),
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver,
+                threadId: turnInput.threadId,
+                providerThreadId: turnInput.providerThread.id,
+                runId: turnInput.runId,
+                cause: new CodexAppServerRequestError({
+                  code: -32600,
+                  errorMessage: rejection,
+                  method: "thread/goal/set",
+                }),
+              }),
+            ),
+          ),
         ),
     });
     assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
     const error = written.find((item) => item.type === "error");
     assert.include(error?.failure.message ?? "", rejection);
+    assert.deepEqual(
+      finalEvents.flatMap((event) =>
+        event.type === "provider-thread.updated" ? [event.payload.nativeStorageFolder] : [],
+      ),
+      ["/repo/b"],
+    );
   }),
 );
 

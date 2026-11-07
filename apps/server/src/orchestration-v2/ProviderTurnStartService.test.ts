@@ -541,7 +541,6 @@ function makeLocalCommandHarness(input: {
         activeAttemptId: parentTurns[0]!.attempt.id,
         status: "completed" as const,
         completedAt: now,
-        ...(input.sideChat?.parentRunCwd === undefined ? {} : { cwd: input.sideChat.parentRunCwd }),
       },
       {
         ...run,
@@ -552,6 +551,7 @@ function makeLocalCommandHarness(input: {
         activeAttemptId: parentTurns[1]!.attempt.id,
         status: "rolled_back" as const,
         completedAt: now,
+        ...(input.sideChat?.parentRunCwd === undefined ? {} : { cwd: input.sideChat.parentRunCwd }),
       },
       ...(input.sideChat?.nativeForkFrom === "busy"
         ? [
@@ -571,7 +571,6 @@ function makeLocalCommandHarness(input: {
     providerTurns: parentTurns.map(({ turn }) => turn),
     turnItems: [],
   };
-  // Every run rewrites the thread's one root scope row; only the events keep each run's folder.
   const parentScopeEvents = [
     [parentRunId, "/repo/side-chat-parent"] as const,
     [parentRolledBackRunId, "/repo/side-chat-parent-later"] as const,
@@ -594,6 +593,9 @@ function makeLocalCommandHarness(input: {
       },
     },
   }));
+  const readEvents = vi.fn<EventStore.EventStoreV2["Service"]["read"]>((request) =>
+    Stream.fromIterable(request?.threadId === parentThreadId ? parentScopeEvents : []),
+  );
   if (input.sideChat !== undefined) {
     const earlierRunId = RunId.make("side-chat-earlier-run");
     projection = {
@@ -974,10 +976,7 @@ function makeLocalCommandHarness(input: {
               return [];
             }),
         }),
-        Layer.mock(EventStore.EventStoreV2)({
-          read: (request) =>
-            Stream.fromIterable(request?.threadId === parentThreadId ? parentScopeEvents : []),
-        }),
+        Layer.mock(EventStore.EventStoreV2)({ read: readEvents }),
         IdAllocator.layer,
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
@@ -1059,6 +1058,7 @@ function makeLocalCommandHarness(input: {
     startRootRun,
     startTurn,
     forkThread,
+    readEvents,
     interruptTurn,
     tryHandlePromptCommand,
     events,
@@ -1350,8 +1350,9 @@ effectIt.effect.each([
     forks: true,
     transferStatus: "consumed",
     handoffIds: [],
-    // The parent's first run predates run.cwd; its scope event keeps the folder.
+    // The parent's runs predate run.cwd; its first run's scope event keeps the folder.
     storageFolder: "/repo/side-chat-parent",
+    eventReads: 1,
   },
   {
     nativeForkFrom: "idle",
@@ -1360,7 +1361,9 @@ effectIt.effect.each([
     forks: true,
     transferStatus: "consumed",
     handoffIds: [],
+    // Only the first run predates run.cwd; the later run's cwd decides without the events.
     storageFolder: "/repo/side-chat-parent-run",
+    eventReads: 0,
   },
   {
     nativeForkFrom: "idle",
@@ -1370,6 +1373,7 @@ effectIt.effect.each([
     transferStatus: "consumed",
     handoffIds: [],
     storageFolder: undefined,
+    eventReads: 0,
   },
   {
     nativeForkFrom: "busy",
@@ -1379,10 +1383,20 @@ effectIt.effect.each([
     transferStatus: "resolved_portable",
     handoffIds: ["side-chat-fork-context"],
     storageFolder: undefined,
+    eventReads: 0,
   },
 ] as const)(
   "runs a planned native side chat fork when the parent is $nativeForkFrom on $driver with run folder $parentRunCwd",
-  ({ nativeForkFrom, driver, parentRunCwd, forks, transferStatus, handoffIds, storageFolder }) =>
+  ({
+    nativeForkFrom,
+    driver,
+    parentRunCwd,
+    forks,
+    transferStatus,
+    handoffIds,
+    storageFolder,
+    eventReads,
+  }) =>
     Effect.gen(function* () {
       const harness = makeLocalCommandHarness({
         text: "What is the main thread doing?",
@@ -1398,6 +1412,7 @@ effectIt.effect.each([
 
       expect(harness.forkThread).toHaveBeenCalledTimes(forks ? 1 : 0);
       expect(harness.forkThread.mock.calls[0]?.[0].sourceNativeStorageFolder).toBe(storageFolder);
+      expect(harness.readEvents).toHaveBeenCalledTimes(eventReads);
       // The parent's rolled-back turn is gone from its native conversation.
       expect(
         harness.forkThread.mock.calls[0]?.[0].sourceProviderTurns?.map((turn) => turn.id),

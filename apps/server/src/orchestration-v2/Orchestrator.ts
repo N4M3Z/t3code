@@ -12356,8 +12356,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           projection.thread,
           {
             cwd:
-              projection.runs.find((run) => run.id === targetCheckpoint.runId)?.cwd ??
-              targetScope.cwd,
+              projection.runs.find((run) =>
+                targetCheckpoint.runId === null
+                  ? run.ordinal === 1
+                  : run.id === targetCheckpoint.runId,
+              )?.cwd ?? targetScope.cwd,
           },
           {
             projects,

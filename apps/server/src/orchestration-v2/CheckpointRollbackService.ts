@@ -235,13 +235,20 @@ export const layer: Layer.Layer<
         }
       }
 
-      const { runs } = yield* projections.getThreadRecords(input.threadId, ["runs"], {
-        runIds: [checkpoint, ...staleCheckpoints].flatMap((target) =>
-          target.runId === null ? [] : [target.runId],
-        ),
-      });
+      const { runs } = yield* projections.getThreadRecords(
+        input.threadId,
+        ["runs"],
+        checkpoint.runId === null
+          ? undefined
+          : {
+              runIds: [checkpoint, ...staleCheckpoints].flatMap((target) =>
+                target.runId === null ? [] : [target.runId],
+              ),
+            },
+      );
       const runCwd = (target: Pick<OrchestrationV2Checkpoint, "runId">) =>
-        runs.find((run) => run.id === target.runId)?.cwd ?? scope.cwd;
+        runs.find((run) => (target.runId === null ? run.ordinal === 1 : run.id === target.runId))
+          ?.cwd ?? scope.cwd;
       const restoreScope = { ...scope, cwd: runCwd(checkpoint) };
       if (
         input.restoreFiles !== false &&

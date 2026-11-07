@@ -37,6 +37,9 @@ it.effect.each([
   "conversation",
   "moved-run",
   "legacy-run",
+  "baseline",
+  "moved-baseline",
+  "legacy-baseline",
 ] as const)("preserves overlapping workspace files, owner=%s", (owner) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -58,6 +61,11 @@ it.effect.each([
     const checkpointId = CheckpointId.make("restore-checkpoint");
     const scopeId = CheckpointScopeId.make("restore-scope");
     const runId = RunId.make("restore-run");
+    const run = {
+      id: runId,
+      ordinal: 1,
+      ...(owner.startsWith("legacy") ? {} : { cwd: owner.startsWith("moved") ? sibling : cwd }),
+    };
     const calls: string[] = [];
     const providerThread = {
       id: providerThreadId,
@@ -91,7 +99,13 @@ it.effect.each([
       targetAttempt: undefined,
       rolledBackAttemptIds: [],
       staleCheckpoints: [],
-      checkpoint: { id: checkpointId, scopeId, runId, status: "ready", appRunOrdinal: null },
+      checkpoint: {
+        id: checkpointId,
+        scopeId,
+        runId: owner.endsWith("baseline") ? null : runId,
+        status: "ready",
+        appRunOrdinal: null,
+      },
       scope: { id: scopeId, cwd },
       runsToRollback: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as ProjectionCheckpointRollbackContext;
@@ -110,13 +124,9 @@ it.effect.each([
           Layer.mock(ProjectionStoreV2)({
             getThread: () => Effect.succeed(projection.thread),
             getCheckpointRollbackContext: () => Effect.succeed(projection),
-            getThreadRecords: () =>
+            getThreadRecords: (_threadId, _fields, filter) =>
               Effect.succeed({
-                runs: [
-                  owner === "legacy-run"
-                    ? { id: runId }
-                    : { id: runId, cwd: owner === "moved-run" ? sibling : cwd },
-                ],
+                runs: filter?.runIds === undefined || filter.runIds.includes(runId) ? [run] : [],
               } as never),
             getShellSnapshot: () =>
               Effect.succeed({
@@ -178,7 +188,14 @@ it.effect.each([
       Effect.provide(layerTest),
     );
     const restoreFiles = owner !== "conversation";
-    const rejected = !["sibling", "shared-provider", "conversation", "legacy-run"].includes(owner);
+    const rejected = ![
+      "sibling",
+      "shared-provider",
+      "conversation",
+      "legacy-run",
+      "baseline",
+      "legacy-baseline",
+    ].includes(owner);
     if (rejected) {
       const error = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })

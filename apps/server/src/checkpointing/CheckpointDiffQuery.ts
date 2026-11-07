@@ -179,6 +179,13 @@ export const make = Effect.gen(function* () {
         input.fromTurnCount === 0
           ? projection.checkpointScopes.find((scope) => scope.kind === "root_run")
           : undefined;
+      const fromCheckpoint =
+        input.fromTurnCount === 0
+          ? undefined
+          : (parentCheckpoint ??
+            readyCheckpoints.find(
+              (checkpoint) => checkpoint.appRunOrdinal === input.fromTurnCount,
+            ));
       const fromCheckpointRef =
         input.fromTurnCount === 0
           ? firstScope === undefined
@@ -187,13 +194,23 @@ export const make = Effect.gen(function* () {
                 scopeId: firstScope.id,
                 ordinalWithinScope: 0,
               }).pipe(Effect.provideService(Digest.Digest, digest))
-          : (
-              parentCheckpoint ??
-              readyCheckpoints.find(
-                (checkpoint) => checkpoint.appRunOrdinal === input.fromTurnCount,
-              )
-            )?.ref;
-      if (fromCheckpointRef === undefined) {
+          : fromCheckpoint?.ref;
+      // Refs live in the folder the owning run recorded; the scope's cwd moves with the thread.
+      const { runs } = yield* threads
+        .getThreadRecords(input.threadId, ["runs"], {
+          runIds: [toCheckpoint, fromCheckpoint].flatMap((checkpoint) =>
+            checkpoint?.runId == null ? [] : [checkpoint.runId],
+          ),
+        })
+        .pipe(
+          Effect.mapError(
+            () => new CheckpointThreadNotFoundError({ operation, threadId: input.threadId }),
+          ),
+        );
+      const runCwd = (checkpoint: typeof toCheckpoint | undefined) =>
+        runs.find((run) => run.id === checkpoint?.runId)?.cwd;
+      const cwd = runCwd(toCheckpoint) ?? toScope.cwd;
+      if (fromCheckpointRef === undefined || (runCwd(fromCheckpoint) ?? cwd) !== cwd) {
         return yield* new CheckpointRefUnavailableError({
           operation,
           threadId: input.threadId,
@@ -203,7 +220,7 @@ export const make = Effect.gen(function* () {
       }
 
       const comparison = {
-        cwd: toScope.cwd,
+        cwd,
         fromCheckpointRef,
         toCheckpointRef: toCheckpoint.ref,
         fallbackFromToHead: false,

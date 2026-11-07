@@ -2,6 +2,7 @@ import {
   CheckpointId,
   CheckpointScopeId,
   latestProviderTurnForAttempt,
+  type OrchestrationV2Checkpoint,
   type OrchestrationV2DomainEvent,
   ProviderThreadId,
   ThreadId,
@@ -234,9 +235,17 @@ export const layer: Layer.Layer<
         }
       }
 
+      const { runs } = yield* projections.getThreadRecords(input.threadId, ["runs"], {
+        runIds: [checkpoint, ...staleCheckpoints].flatMap((target) =>
+          target.runId === null ? [] : [target.runId],
+        ),
+      });
+      const runCwd = (target: Pick<OrchestrationV2Checkpoint, "runId">) =>
+        runs.find((run) => run.id === target.runId)?.cwd ?? scope.cwd;
+      const restoreScope = { ...scope, cwd: runCwd(checkpoint) };
       if (
         input.restoreFiles !== false &&
-        !(yield* isCheckpointRestoreIsolated(context.thread, scope, {
+        !(yield* isCheckpointRestoreIsolated(context.thread, restoreScope, {
           fileSystem,
           projections,
           projects,
@@ -289,9 +298,11 @@ export const layer: Layer.Layer<
               target: rollbackTarget,
               providerThreadTurns,
             });
-      if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
-      if (staleCheckpoints.length > 0) {
-        yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });
+      if (input.restoreFiles !== false) {
+        yield* checkpoints.restore({ scope: restoreScope, checkpoint });
+      }
+      for (const [cwd, stale] of Map.groupBy(staleCheckpoints, runCwd)) {
+        yield* checkpoints.deleteStaleRefs({ scope: { ...scope, cwd }, checkpoints: stale });
       }
 
       // Lock against full-row thread writes that could restore the old native session after rollback.

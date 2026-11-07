@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -34,6 +35,8 @@ it.effect.each([
   "sibling",
   "shared-provider",
   "conversation",
+  "moved-run",
+  "legacy-run",
 ] as const)("preserves overlapping workspace files, owner=%s", (owner) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -54,6 +57,7 @@ it.effect.each([
     const instanceId = ProviderInstanceId.make("restore-instance");
     const checkpointId = CheckpointId.make("restore-checkpoint");
     const scopeId = CheckpointScopeId.make("restore-scope");
+    const runId = RunId.make("restore-run");
     const calls: string[] = [];
     const providerThread = {
       id: providerThreadId,
@@ -87,7 +91,7 @@ it.effect.each([
       targetAttempt: undefined,
       rolledBackAttemptIds: [],
       staleCheckpoints: [],
-      checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: null },
+      checkpoint: { id: checkpointId, scopeId, runId, status: "ready", appRunOrdinal: null },
       scope: { id: scopeId, cwd },
       runsToRollback: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as ProjectionCheckpointRollbackContext;
@@ -106,6 +110,14 @@ it.effect.each([
           Layer.mock(ProjectionStoreV2)({
             getThread: () => Effect.succeed(projection.thread),
             getCheckpointRollbackContext: () => Effect.succeed(projection),
+            getThreadRecords: () =>
+              Effect.succeed({
+                runs: [
+                  owner === "legacy-run"
+                    ? { id: runId }
+                    : { id: runId, cwd: owner === "moved-run" ? sibling : cwd },
+                ],
+              } as never),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 1,
@@ -166,7 +178,7 @@ it.effect.each([
       Effect.provide(layerTest),
     );
     const restoreFiles = owner !== "conversation";
-    const rejected = !["sibling", "shared-provider", "conversation"].includes(owner);
+    const rejected = !["sibling", "shared-provider", "conversation", "legacy-run"].includes(owner);
     if (rejected) {
       const error = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })

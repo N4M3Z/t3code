@@ -268,6 +268,7 @@ it.effect.each([
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getThread: () => Effect.succeed(projection.thread),
             getCheckpointRollbackContext: () => Effect.succeed(projection),
+            getThreadRecords: () => Effect.succeed({ runs: [] } as never),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 1,
@@ -357,6 +358,8 @@ const seedRollbackHistory = Effect.gen(function* () {
   const modelSelection = { instanceId: providerInstanceId, model: "test" };
   const scopeId = CheckpointScopeId.make("rollback-history-root");
   const otherScopeId = CheckpointScopeId.make("rollback-history-child");
+  // Run 6 worked in another folder, so its stale ref is deleted there.
+  const movedCwd = "/rollback-history/moved";
   const runId = (ordinal: number) => RunId.make(`rollback-history-run-${ordinal}`);
   const nodeId = (ordinal: number) => NodeId.make(`rollback-history-node-${ordinal}`);
   const attemptId = (ordinal: number) => RunAttemptId.make(`rollback-history-attempt-${ordinal}`);
@@ -465,6 +468,7 @@ const seedRollbackHistory = Effect.gen(function* () {
         completedAt: now,
         checkpointId: checkpointId(ordinal),
         contextHandoffId: null,
+        ...(ordinal === 6 ? { cwd: movedCwd } : {}),
       },
     });
     yield* apply({
@@ -571,8 +575,14 @@ const seedRollbackHistory = Effect.gen(function* () {
             Effect.sync(() => {
               restored.push(checkpoint.id);
             }),
-          deleteStaleRefs: ({ checkpoints }) =>
+          deleteStaleRefs: ({ scope, checkpoints }) =>
             Effect.sync(() => {
+              for (const checkpoint of checkpoints) {
+                assert.equal(
+                  scope.cwd,
+                  checkpoint.id === checkpointId(6) ? movedCwd : process.cwd(),
+                );
+              }
               deletedRefs.push(...checkpoints.map((checkpoint) => checkpoint.id));
             }),
         }),

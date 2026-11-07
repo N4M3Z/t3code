@@ -14,6 +14,7 @@ import {
   ProviderThreadId,
   RunAttemptId,
   RunId,
+  ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -277,7 +278,7 @@ const outboxOf = (threadId: ThreadId) =>
   );
 
 it.layer(layerTest)("ThreadMoveService", (it) => {
-  it.effect("a refused move commits nothing", () =>
+  it.effect("a refused move or a failed environment read commits nothing", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { at, a, thread, shellOf } = yield* setup("refused");
@@ -296,6 +297,31 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         assert.equal((yield* shellOf(threadId)).projectId, a.id);
         assert.deepEqual(yield* outboxOf(threadId), []);
         yield* Ref.set(probe, () => Effect.succeed(false));
+
+        // The decision reads the settings once itself; the environment resolver's read comes second.
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const reads = yield* Ref.make(0);
+        const unresolved = yield* ThreadMoveService.make.pipe(
+          Effect.provideService(ServerSettings.ServerSettingsService, {
+            ...settings,
+            getSettings: Ref.updateAndGet(reads, (count) => count + 1).pipe(
+              Effect.flatMap((count) =>
+                count === 2
+                  ? new ServerSettingsError({
+                      settingsPath: at("settings.json"),
+                      operation: "read-file",
+                    })
+                  : settings.getSettings,
+              ),
+            ),
+          }),
+        );
+        const failure = yield* unresolved
+          .move({ threadId, destination: at("b") })
+          .pipe(Effect.flip);
+        assert.equal(failure.message, "Could not resolve the provider's environment.");
+        assert.equal((yield* shellOf(threadId)).projectId, a.id);
+        assert.deepEqual(yield* outboxOf(threadId), []);
       }),
     ),
   );
@@ -429,6 +455,37 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
           _tag: "refused",
           reason: `The thread changed. Try again. The project "other" was added and stays.`,
           projects: [{ projectId: other!.id, title: "other" }],
+        });
+        assert.equal((yield* shellOf(threadId)).projectId, a.id);
+
+        // The added project is deleted before the move takes its lock.
+        yield* (yield* FileSystem.FileSystem).makeDirectory(at("gone"));
+        const deleting = yield* ThreadMoveService.make.pipe(
+          Effect.provideService(ProjectLock.ProjectLock, {
+            ...projectLocks,
+            withLock: (key, effect) =>
+              projects
+                .delete({
+                  commandId: CommandId.make(`recheck:delete:${key}`),
+                  projectId: key,
+                  force: true,
+                })
+                .pipe(Effect.orDie, Effect.andThen(projectLocks.withLock(key, effect))),
+          }),
+        );
+        const gone = yield* deleting.move({
+          threadId,
+          destination: at("gone"),
+          addProject: true,
+          confirm: true,
+        });
+        const deleted = Option.getOrUndefined(
+          yield* projects.getByWorkspaceRoot(at("gone"), { includeDeleted: true }),
+        );
+        assert.deepEqual(gone, {
+          _tag: "refused",
+          reason: `The destination project no longer exists. The project "gone" was added.`,
+          projects: [{ projectId: deleted!.id, title: "gone" }],
         });
         assert.equal((yield* shellOf(threadId)).projectId, a.id);
       }),

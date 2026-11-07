@@ -57,6 +57,7 @@ export class ThreadMoveService extends Context.Service<
 type Refused = Extract<ThreadMoveResult, { _tag: "refused" }>;
 
 const refused = (reason: string): Refused => ({ _tag: "refused", reason });
+const destinationGone = refused("The destination project no longer exists.");
 const quote = (title: string) => `"${title}"`;
 
 export const make = Effect.gen(function* () {
@@ -111,7 +112,7 @@ export const make = Effect.gen(function* () {
       path,
       rawProviderInstanceId: instanceId,
       env: hostEnvironment as Record<string, string>,
-    }).pipe(Effect.orElseSucceed(() => ({})));
+    }).pipe(Effect.mapError(fail("Could not resolve the provider's environment.")));
     const snapshot = yield* instance.snapshot.getSnapshot;
     return {
       driver: instance.driverKind,
@@ -174,7 +175,6 @@ export const make = Effect.gen(function* () {
         })
         .pipe(Effect.mapError(fail("Could not read the thread's pending moves."))));
     return {
-      shells,
       projects: projectList,
       decision: relocating
         ? refused("The last move is still relocating a Claude session. Try again in a moment.")
@@ -232,7 +232,7 @@ export const make = Effect.gen(function* () {
         .getById(projectId)
         .pipe(Effect.mapError(fail("Could not read the destination project."))),
     );
-    if (project === undefined) return refused("The destination project no longer exists.");
+    if (project === undefined) return destinationGone;
     if (project.archivedAt != null) {
       return refused(`The destination project ${quote(project.title)} is archived.`);
     }
@@ -386,9 +386,10 @@ export const make = Effect.gen(function* () {
       if (added === undefined || result._tag === "moved") return result;
       const refusal =
         result._tag === "refused" ? result : refused("The thread changed. Try again.");
+      const stays = result === destinationGone ? "" : " and stays";
       return {
         ...refusal,
-        reason: `${refusal.reason} The project ${quote(added.title)} was added and stays.`,
+        reason: `${refusal.reason} The project ${quote(added.title)} was added${stays}.`,
         projects: [...(refusal.projects ?? []), { projectId: added.id, title: added.title }],
       };
     },

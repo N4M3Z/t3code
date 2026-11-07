@@ -1,5 +1,6 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import { EnvironmentId, ProjectReadFileError, ThreadId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -8,6 +9,7 @@ import { act, render } from "../../test/render";
 import "../index.css";
 
 import { filesystemEnvironment } from "../state/filesystem";
+import { projectEnvironment } from "../state/projects";
 import { useRightPanelStore } from "../rightPanelStore";
 import { setMarkdownTaskChecked } from "@t3tools/shared/markdownTaskList";
 import { HostImageUrlContext } from "./chat/hostImageUrl";
@@ -100,9 +102,14 @@ vi.mock(import("../hooks/useSettings"), async (original) => {
   }
   return { ...actual, useClientSettings };
 });
+vi.mock(import("../state/filesystem"), async (original) => ({
+  ...(await original()),
+  useFilesystemReadAccess: () => ({ canReadFiles: true, isPending: false, error: null }),
+}));
 
 import ChatMarkdown from "./ChatMarkdown";
 import { AudioPreview } from "./files/AudioPreview";
+import FilePreviewPanel from "./files/FilePreviewPanel";
 
 it("keeps compact audio playback loaded across signed URL renewals", async () => {
   const original =
@@ -365,7 +372,6 @@ describe("ChatMarkdown workspace file opens", () => {
     expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/elsewhere/b.md", 9);
     expect(workspaceSearch).toHaveBeenCalledOnce();
 
-    // Recorded in a since-removed folder: opened there, not at the workspace's same-named file.
     workspaceSearch.mockResolvedValue(result);
     await screen.rerender(
       <ChatMarkdown
@@ -378,12 +384,56 @@ describe("ChatMarkdown workspace file opens", () => {
     const recorded = container.querySelector("a")!;
     expect(recorded.getAttribute("href")).toBe("/school/old/physics/notes/a.md");
     await act(async () => recorded.click());
-    expect(openFile).toHaveBeenCalledTimes(2);
     expect(openFile).toHaveBeenLastCalledWith(
       threadRef,
       "/school/old/physics/notes/a.md",
       undefined,
     );
+    using _read = vi.spyOn(projectEnvironment, "readFile").mockImplementation(
+      ({ input }) =>
+        Atom.make(
+          input.relativePath.startsWith("/school/old/")
+            ? AsyncResult.failure(
+                Cause.fail(
+                  new ProjectReadFileError({
+                    ...input,
+                    failure: "operation_failed",
+                    operation: "realpath-target",
+                    resolvedPath: input.relativePath,
+                    cause: { code: "ENOENT" },
+                  }),
+                ),
+              )
+            : AsyncResult.success({ ...input, contents: "Notes", byteLength: 5, truncated: false }),
+        ) as never,
+    );
+    await using panel = await render(
+      <FilePreviewPanel
+        environmentId={threadRef.environmentId}
+        cwd="/school/physics"
+        projectName="physics"
+        relativePath={openFile.mock.lastCall![1]}
+        threadRef={threadRef}
+        composerDraftTarget={threadRef}
+        keybindings={[]}
+        availableEditors={[]}
+        openInShortcutEnabled={false}
+        revealLine={null}
+        revealRequestId={0}
+        onOpenFile={vi.fn()}
+        onNavigateFolder={vi.fn()}
+        folderTrail={undefined}
+        onPendingChange={vi.fn()}
+        selectedFilePending={false}
+        workspaceMutationId={null}
+      />,
+    );
+    await expect
+      .element(panel.getByRole("alert"))
+      .toHaveTextContent(
+        "The file could not be accessed or read. It may be missing or inaccessible.Attempted path/school/old/physics/notes/a.md",
+      );
+    expect(openFile).toHaveBeenCalledTimes(2);
     expect(workspaceSearch).toHaveBeenCalledOnce();
   });
 });

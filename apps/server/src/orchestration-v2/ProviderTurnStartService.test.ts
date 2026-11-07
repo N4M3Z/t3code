@@ -44,7 +44,6 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { moveReceiptTurnItem } from "../project/ThreadMoveReceipt.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
@@ -168,7 +167,6 @@ function startWithMissingWorktree(
           getById: () =>
             Effect.succeedSome({ workspaceRoot: "/tmp/provider-turn-start-project" } as never),
         }),
-        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords: () => {
             projectionReadCount += 1;
@@ -995,16 +993,7 @@ function makeLocalCommandHarness(input: {
           getById: () =>
             Effect.succeedSome({
               workspaceRoot: input.workspaceRoot ?? "/tmp/native-account-project",
-              repositoryIdentity: null,
             } as never),
-        }),
-        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-          resolve: (cwd) =>
-            Effect.succeed(
-              cwd === "/tmp/native-account-command"
-                ? ({ rootPath: "/tmp/native-account-repository" } as never)
-                : null,
-            ),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords,
@@ -1945,14 +1934,18 @@ effectIt.effect("fails the run instead of replacing a native thread another clie
 
 effectIt.effect("does not mistake a failed state read for a superseded run", () =>
   Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({ text: "Continue", failReadsAfterRunning: true });
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      fileSystem: FileSystem.makeNoop({ exists: (path) => Effect.succeed(path === "/tmp/.git") }),
+      failReadsAfterRunning: true,
+    });
 
     yield* harness.start;
 
     expect(harness.projection().runs.at(-1)).toMatchObject({
       status: "running",
       cwd: "/tmp/native-account-command",
-      repositoryRoot: "/tmp/native-account-repository",
+      repositoryRoot: "/tmp",
     });
     expect(harness.events.map((event) => event.type)).not.toContain("checkpoint-scope.created");
     const controls = harness.startRootRun.mock.calls[0]?.[0];

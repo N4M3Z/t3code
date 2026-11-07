@@ -19,18 +19,14 @@ import * as Layer from "effect/Layer";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 
-export const layer = Layer.mergeAll(
+export const layer = Layer.merge(
   Layer.mock(GitWorkflow.GitWorkflowService)({
     pruneWorktrees: () => Effect.void,
     createWorktree: () => Effect.succeed({} as never),
   }),
   Layer.mock(ProjectService.ProjectService)({
     getById: () => Effect.succeedNone,
-  }),
-  Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-    resolve: () => Effect.succeed(null),
   }),
 );
 

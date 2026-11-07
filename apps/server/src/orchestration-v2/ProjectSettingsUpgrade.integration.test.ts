@@ -21,7 +21,6 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -144,11 +143,6 @@ const layerRuntime = (dbPath: string) => {
         peek: () => Effect.succeed(unusedEnrichment),
         getAvailable: () => Effect.succeed(unusedEnrichment),
         invalidate: () => Effect.void,
-      }),
-    ),
-    Layer.provide(
-      Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-        resolve: () => Effect.succeed(null),
       }),
     ),
     Layer.provide(

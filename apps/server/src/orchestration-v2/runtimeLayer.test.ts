@@ -55,7 +55,6 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -125,15 +124,9 @@ const layerGitWorkflowTest = Layer.mock(GitWorkflow.GitWorkflowService)({
   pruneWorktrees: () => Effect.void,
   createWorktree: () => Effect.succeed({} as never),
 });
-const layerRepositoryIdentityResolverTest = Layer.mock(
-  RepositoryIdentityResolver.RepositoryIdentityResolver,
-)({ resolve: () => Effect.succeed(null) });
-const layerProjectServiceTest = Layer.merge(
-  Layer.mock(ProjectService.ProjectService)({
-    getById: () => Effect.succeedNone,
-  }),
-  layerRepositoryIdentityResolverTest,
-);
+const layerProjectServiceTest = Layer.mock(ProjectService.ProjectService)({
+  getById: () => Effect.succeedNone,
+});
 
 const driver = ProviderDriverKind.make("codex");
 const orchestrationAdapter = {
@@ -372,7 +365,6 @@ const layerProjectDeletionTest = Layer.mergeAll(
   RuntimeLayer.layerEventSink,
   ThreadCommandExecutor.layer,
 ).pipe(
-  Layer.provide(layerRepositoryIdentityResolverTest),
   Layer.provide(
     Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
       peek: () =>
@@ -858,7 +850,6 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   RuntimeLayer.layerEventSink,
   RuntimeLayer.layerEventInfrastructure,
 ).pipe(
-  Layer.provide(layerRepositoryIdentityResolverTest),
   Layer.provide(
     Layer.mock(WorkspacePaths.WorkspacePaths)({
       normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),

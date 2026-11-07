@@ -1667,7 +1667,6 @@ describe("MessagesTimeline file links", () => {
       "/repo-a/app/kept.txt",
     ]);
 
-    // Without a recorded root, only a row in the current folder borrows the current root.
     for (const [folder, target] of [
       [{ cwd: "/repo-w/app" }, "/repo-w/app/kept.txt"],
       [{ cwd: "/repo-old" }, "/repo-old/app/kept.txt"],

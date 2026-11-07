@@ -1,0 +1,285 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, it } from "@effect/vitest";
+import {
+  type OrchestrationV2ProviderThread,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+
+import * as ServerSettings from "../serverSettings.ts";
+import * as ClaudeSessionRelocation from "./ClaudeSessionRelocation.ts";
+import * as EventSink from "./EventSink.ts";
+import * as ThreadManagementService from "./ThreadManagementService.ts";
+
+const sessionId = "session-relocated";
+const withConfig = { CLAUDE_CONFIG_DIR: "/config" };
+
+it.each([
+  { version: "2.1.222", named: "2.1.222" },
+  { version: "2.1.223", named: undefined },
+  { version: "2.2.0", named: undefined },
+  { version: "next", named: '"next"' },
+  { version: null, named: "an unknown version" },
+])("gates a Claude folder move on CLI version $version", ({ version, named }) => {
+  const refusal = ClaudeSessionRelocation.claudeFolderMoveVersionRefusal({ version });
+  assert.equal(refusal === undefined, named === undefined);
+  if (named !== undefined) {
+    assert.include(refusal ?? "", named);
+    assert.include(refusal ?? "", "Refreshing the providers");
+  }
+  if (version === null) {
+    assert.equal(ClaudeSessionRelocation.claudeFolderMoveVersionRefusal(undefined), refusal);
+  }
+});
+
+it.effect("refuses only a relative CLAUDE_CONFIG_DIR", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const refusal = (value: string | undefined) =>
+      ClaudeSessionRelocation.claudeConfigDirRefusal(path, { CLAUDE_CONFIG_DIR: value });
+    assert.include(refusal("claude-home") ?? "", '"claude-home"');
+    assert.isUndefined(refusal("/Users/me/.claude-work"));
+    assert.isUndefined(refusal(undefined));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.each([
+  { folder: "/Users/me/Repo.v2", environment: {}, name: "-Users-me-Repo-v2" },
+  // Golden value from the SDK's own projectDirName (sdk.mjs `Fu`).
+  { folder: `/${"a".repeat(250)}`, environment: {}, name: `-${"a".repeat(199)}-feo44x` },
+  {
+    folder: "/Users/me/repo",
+    environment: { ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: "my_proj-1" },
+    name: "my_proj-1",
+  },
+  {
+    folder: "/Users/me/repo",
+    environment: { CLAUDE_CODE_PROJECT_DIR_NAME: "my_proj-1" },
+    name: "-Users-me-repo",
+  },
+  {
+    folder: "/Users/me/repo",
+    environment: { ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: "a/b" },
+    name: "-Users-me-repo",
+  },
+  {
+    folder: "/Users/me/repo",
+    environment: { ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: "COM1" },
+    name: "-Users-me-repo",
+  },
+  {
+    folder: "/Users/me/repo",
+    environment: { ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: "x".repeat(65) },
+    name: "-Users-me-repo",
+  },
+])("names Claude's project folder for $folder as $name", ({ folder, environment, name }) => {
+  assert.equal(ClaudeSessionRelocation.claudeProjectDirName(folder, environment), name);
+});
+
+const exdev = (method: string, pathOrDescriptor: string) =>
+  PlatformError.systemError({
+    _tag: "Unknown",
+    module: "FileSystem",
+    method,
+    pathOrDescriptor,
+    cause: Object.assign(new Error("cross-device link"), { code: "EXDEV" }),
+  });
+
+const setup = Effect.fn("ClaudeSessionRelocationTest.setup")(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-relocation-" });
+  const configDir = path.join(root, "config");
+  const oldFolder = path.join(root, "repo-a");
+  // Decomposed é: Claude names the folder from its NFC form on macOS.
+  const newFolder = path.join(root, "café");
+  yield* fileSystem.makeDirectory(oldFolder);
+  yield* fileSystem.makeDirectory(newFolder);
+  const projectDir = (folder: string) =>
+    Effect.map(fileSystem.realPath(folder), (real) =>
+      path.join(
+        configDir,
+        "projects",
+        ClaudeSessionRelocation.claudeProjectDirName(real.normalize("NFC"), {}),
+      ),
+    );
+  const oldDir = yield* projectDir(oldFolder);
+  const newDir = yield* projectDir(newFolder);
+  yield* fileSystem.makeDirectory(path.join(oldDir, sessionId), { recursive: true });
+  yield* fileSystem.writeFileString(path.join(oldDir, `${sessionId}.jsonl`), '{"type":"user"}\n');
+  return { fileSystem, path, configDir, oldFolder, newFolder, oldDir, newDir };
+});
+
+const relocate = (context: Effect.Success<ReturnType<typeof setup>>) =>
+  ClaudeSessionRelocation.relocateClaudeTranscript({
+    environment: { CLAUDE_CONFIG_DIR: context.configDir },
+    sessionId,
+    oldFolder: context.oldFolder,
+    newFolder: context.newFolder,
+  }).pipe(Effect.provideService(HostProcess.Platform, "darwin"));
+
+const lastRecord = (contents: string) => JSON.parse(contents.trimEnd().split("\n").at(-1) ?? "");
+
+it.effect("moves a Claude transcript and its subagent folder into the new folder's storage", () =>
+  Effect.gen(function* () {
+    const context = yield* setup();
+    const { fileSystem, path, oldDir, newDir } = context;
+    assert.isTrue(newDir.endsWith("-caf-"));
+    yield* fileSystem.writeFileString(
+      path.join(oldDir, sessionId, "agent-1.jsonl"),
+      '{"type":"assistant"}\n',
+    );
+    yield* fileSystem.makeDirectory(path.join(newDir, sessionId), { recursive: true });
+    yield* fileSystem.writeFileString(path.join(newDir, sessionId, "stale.jsonl"), "stale\n");
+    yield* fileSystem.writeFileString(path.join(newDir, `${sessionId}.jsonl`), "occupant\n");
+
+    yield* relocate(context);
+
+    const moved = yield* fileSystem.readFileString(path.join(newDir, `${sessionId}.jsonl`));
+    assert.isTrue(moved.startsWith('{"type":"user"}\n'));
+    assert.deepEqual(lastRecord(moved), {
+      type: "relocated",
+      sessionId,
+      relocatedCwd: (yield* fileSystem.realPath(context.newFolder)).normalize("NFC"),
+    });
+    assert.isTrue(yield* fileSystem.exists(path.join(newDir, sessionId, "agent-1.jsonl")));
+    assert.equal(
+      yield* fileSystem.readFileString(path.join(newDir, `${sessionId}.jsonl.superseded-0`)),
+      "occupant\n",
+    );
+    assert.isTrue(yield* fileSystem.exists(path.join(newDir, `${sessionId}.superseded-0`)));
+    assert.isFalse(yield* fileSystem.exists(path.join(oldDir, `${sessionId}.jsonl`)));
+    assert.isFalse(yield* fileSystem.exists(path.join(oldDir, sessionId)));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("copies across devices and leaves a diskless session alone", () =>
+  Effect.gen(function* () {
+    const context = yield* setup();
+    const { fileSystem, path, oldDir, newDir } = context;
+    yield* fileSystem.remove(path.join(oldDir, sessionId), { recursive: true });
+    const crossDevice = FileSystem.FileSystem.of({
+      ...fileSystem,
+      rename: (from, to) =>
+        from.startsWith(oldDir) ? Effect.fail(exdev("rename", from)) : fileSystem.rename(from, to),
+    });
+
+    yield* relocate(context).pipe(Effect.provideService(FileSystem.FileSystem, crossDevice));
+
+    const moved = yield* fileSystem.readFileString(path.join(newDir, `${sessionId}.jsonl`));
+    assert.equal(lastRecord(moved).type, "relocated");
+    assert.isFalse(yield* fileSystem.exists(path.join(oldDir, `${sessionId}.jsonl`)));
+
+    yield* fileSystem.remove(newDir, { recursive: true });
+    yield* relocate(context);
+    assert.isFalse(yield* fileSystem.exists(newDir));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  { name: "records the new folder after the transcript moves", fails: false },
+  { name: "keeps the recorded folder when the move fails", fails: true },
+])("$name", ({ fails }) =>
+  Effect.gen(function* () {
+    const context = yield* setup();
+    const { fileSystem, path, oldDir, newDir } = context;
+    const threadId = ThreadId.make("thread:claude-relocation");
+    const now = yield* DateTime.now;
+    const providerThread: OrchestrationV2ProviderThread = {
+      id: ProviderThreadId.make("provider-thread:claude-relocation"),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      providerSessionId: null,
+      appThreadId: threadId,
+      ownerNodeId: null,
+      nativeThreadRef: {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        strength: "strong",
+        nativeId: sessionId,
+      },
+      nativeConversationHeadRef: null,
+      nativeStorageFolder: context.oldFolder,
+      status: "idle",
+      firstRunOrdinal: null,
+      lastRunOrdinal: null,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const writes: Array<OrchestrationV2ProviderThread | undefined> = [];
+    const denied = FileSystem.FileSystem.of({
+      ...fileSystem,
+      rename: (from, to) =>
+        from.startsWith(oldDir)
+          ? Effect.fail(
+              PlatformError.systemError({
+                _tag: "PermissionDenied",
+                module: "FileSystem",
+                method: "rename",
+                pathOrDescriptor: from,
+                cause: Object.assign(new Error("access denied"), { code: "EACCES" }),
+              }),
+            )
+          : fileSystem.rename(from, to),
+    });
+
+    const exit = yield* ClaudeSessionRelocation.relocateClaudeSessionStorage(threadId, {
+      type: "provider-session.relocate-storage",
+      driver: providerThread.driver,
+      providerInstanceId: providerThread.providerInstanceId,
+      providerThreadId: providerThread.id,
+      nativeSessionId: sessionId,
+      oldFolder: context.oldFolder,
+      newFolder: context.newFolder,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fails ? denied : fileSystem),
+      Effect.provideService(HostProcess.Environment, {}),
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettings.layerTest({
+            providerInstances: {
+              [providerThread.providerInstanceId]: {
+                driver: providerThread.driver,
+                config: { homePath: context.configDir },
+              },
+            },
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed({ providerThreads: [providerThread] }) as never,
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            writeIfProviderThreadUnchanged: ({ events }) =>
+              Effect.sync(() => {
+                const [event] = events;
+                writes.push(event?.type === "provider-thread.updated" ? event.payload : undefined);
+                return { committed: true, storedEvents: [] };
+              }),
+          }),
+          IdAllocator.layer,
+        ),
+      ),
+      Effect.exit,
+    );
+
+    assert.equal(exit._tag === "Failure", fails);
+    assert.deepEqual(
+      writes.map((payload) => payload?.nativeStorageFolder),
+      fails ? [] : [context.newFolder],
+    );
+    assert.equal(
+      yield* fileSystem.exists(path.join(fails ? oldDir : newDir, `${sessionId}.jsonl`)),
+      true,
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

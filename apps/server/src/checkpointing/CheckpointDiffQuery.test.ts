@@ -201,7 +201,7 @@ it.effect("diffs a past turn in the folder its run recorded", () => {
     projection: Effect.succeed({
       ...moved,
       runs: moved.runs.map((run) => ({ ...run, status: "completed" as const })),
-      checkpointScopes: moved.checkpointScopes.map((scope) => ({ ...scope, cwd: "/repo-b" })),
+      checkpointScopes: moved.checkpointScopes.map((scope) => ({ ...scope, cwd: "/repo-c" })),
     }),
     runs: [
       { id: firstRunId },
@@ -215,17 +215,20 @@ it.effect("diffs a past turn in the folder its run recorded", () => {
     const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
     yield* query.getTurnDiff({ threadId, fromTurnCount: 1, toTurnCount: 2 });
     yield* query.getTurnDiff({ threadId, fromTurnCount: 0, toTurnCount: 1 });
+    yield* query.getTurnDiff({ threadId, fromTurnCount: 2, toTurnCount: 3 });
+    for (const fromTurnCount of [0, 1]) {
+      const crossFolderError = yield* query
+        .getTurnDiff({ threadId, fromTurnCount, toTurnCount: 3 })
+        .pipe(Effect.flip);
+      assert.instanceOf(crossFolderError, CheckpointRefUnavailableError);
+      assert.deepEqual(
+        { checkpoint: crossFolderError.checkpoint, turnCount: crossFolderError.turnCount },
+        { checkpoint: "from", turnCount: fromTurnCount },
+      );
+    }
     assert.deepEqual(
       diffCheckpoints.mock.calls.map(([input]) => input.cwd),
-      ["/repo-a", "/repo-b"],
-    );
-    const movedError = yield* query
-      .getTurnDiff({ threadId, fromTurnCount: 2, toTurnCount: 3 })
-      .pipe(Effect.flip);
-    assert.instanceOf(movedError, CheckpointRefUnavailableError);
-    assert.deepEqual(
-      { checkpoint: movedError.checkpoint, turnCount: movedError.turnCount },
-      { checkpoint: "from", turnCount: 2 },
+      ["/repo-a", "/repo-c", "/repo-b"],
     );
   }).pipe(Effect.provide(layer));
 });

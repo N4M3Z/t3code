@@ -302,6 +302,7 @@ export const layer: Layer.Layer<
         yield* checkpoints.restore({ scope: restoreScope, checkpoint });
       }
       for (const [cwd, stale] of Map.groupBy(staleCheckpoints, runCwd)) {
+        if (!(yield* fileSystem.exists(cwd))) continue;
         yield* checkpoints.deleteStaleRefs({ scope: { ...scope, cwd }, checkpoints: stale });
       }
 

@@ -196,21 +196,28 @@ export const make = Effect.gen(function* () {
               }).pipe(Effect.provideService(Digest.Digest, digest))
           : fromCheckpoint?.ref;
       // Refs live in the folder the owning run recorded; the scope's cwd moves with the thread.
+      // Run 1 captured the thread baseline, and each run captures its own baseline in its folder.
+      const fromEnd =
+        input.fromTurnCount === 0
+          ? { runId: projection.runs.find((run) => run.ordinal === 1)?.id, scopeId: firstScope?.id }
+          : fromCheckpoint;
       const { runs } = yield* threads
         .getThreadRecords(input.threadId, ["runs"], {
-          runIds: [toCheckpoint, fromCheckpoint].flatMap((checkpoint) =>
-            checkpoint?.runId == null ? [] : [checkpoint.runId],
-          ),
+          runIds: [toCheckpoint, fromEnd].flatMap((end) => (end?.runId == null ? [] : [end.runId])),
         })
         .pipe(
           Effect.mapError(
             () => new CheckpointThreadNotFoundError({ operation, threadId: input.threadId }),
           ),
         );
-      const runCwd = (checkpoint: typeof toCheckpoint | undefined) =>
-        runs.find((run) => run.id === checkpoint?.runId)?.cwd;
-      const cwd = runCwd(toCheckpoint) ?? toScope.cwd;
-      if (fromCheckpointRef === undefined || (runCwd(fromCheckpoint) ?? cwd) !== cwd) {
+      const folder = (end: typeof fromEnd) =>
+        runs.find((run) => run.id === end?.runId)?.cwd ??
+        projection.checkpointScopes.find((scope) => scope.id === end?.scopeId)?.cwd;
+      const cwd = folder(toCheckpoint) ?? toScope.cwd;
+      if (
+        fromCheckpointRef === undefined ||
+        (input.fromTurnCount !== input.toTurnCount - 1 && folder(fromEnd) !== cwd)
+      ) {
         return yield* new CheckpointRefUnavailableError({
           operation,
           threadId: input.threadId,

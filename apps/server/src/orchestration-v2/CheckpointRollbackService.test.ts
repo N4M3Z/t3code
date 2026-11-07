@@ -358,8 +358,7 @@ const seedRollbackHistory = Effect.gen(function* () {
   const modelSelection = { instanceId: providerInstanceId, model: "test" };
   const scopeId = CheckpointScopeId.make("rollback-history-root");
   const otherScopeId = CheckpointScopeId.make("rollback-history-child");
-  // Run 6 worked in another folder, so its stale ref is deleted there.
-  const movedCwd = "/rollback-history/moved";
+  const movedCwd = import.meta.dirname;
   const runId = (ordinal: number) => RunId.make(`rollback-history-run-${ordinal}`);
   const nodeId = (ordinal: number) => NodeId.make(`rollback-history-node-${ordinal}`);
   const attemptId = (ordinal: number) => RunAttemptId.make(`rollback-history-attempt-${ordinal}`);
@@ -468,6 +467,7 @@ const seedRollbackHistory = Effect.gen(function* () {
         completedAt: now,
         checkpointId: checkpointId(ordinal),
         contextHandoffId: null,
+        ...(ordinal === 4 ? { cwd: "/rollback-history/removed" } : {}),
         ...(ordinal === 6 ? { cwd: movedCwd } : {}),
       },
     });
@@ -673,7 +673,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
 
         assert.deepEqual(history.rollbackCounts, [4]);
         assert.deepEqual(history.restored, [checkpointId(2)]);
-        assert.sameMembers(history.deletedRefs, [3, 4, 5, 6].map(checkpointId));
+        assert.sameMembers(history.deletedRefs, [3, 5, 6].map(checkpointId));
         const runs = yield* sql<{ ordinal: number; status: string }>`
           SELECT ordinal, status FROM orchestration_v2_projection_runs
           WHERE thread_id = ${threadId} ORDER BY ordinal`;
@@ -717,7 +717,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
           yield* history.rollback(0);
 
           assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
-          assert.sameMembers(history.deletedRefs, [1, 2, 3, 4, 5, 6].map(history.checkpointId));
+          assert.sameMembers(history.deletedRefs, [1, 2, 3, 5, 6].map(history.checkpointId));
           assert.sameMembers(
             history.committed
               .filter((event) => event.type === "run.updated")

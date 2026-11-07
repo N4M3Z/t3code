@@ -318,13 +318,14 @@ describe("orchestration V2 contracts", () => {
 
     const decoded = decodeOrchestrationV2ProviderCapabilities(legacyCapabilities);
     expect(decoded.runtimePolicy).toEqual({ enforcement: "client-boundary" });
-    expect(decoded.sessions.supportsFolderMove).toBeUndefined();
 
     const explicit = decodeOrchestrationV2ProviderCapabilities({
       ...legacyCapabilities,
+      sessions: { ...legacyCapabilities.sessions, supportsFolderMove: true },
       runtimePolicy: { enforcement: "native" },
     });
     expect(explicit.runtimePolicy).toEqual({ enforcement: "native" });
+    expect(explicit.sessions.supportsFolderMove).toBe(true);
   });
 
   it("keeps a system notice's previous folder in stored JSON and decodes notices without one", () => {

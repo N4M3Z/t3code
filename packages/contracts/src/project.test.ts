@@ -144,6 +144,7 @@ describe("shared project payloads", () => {
     ];
     const results: ReadonlyArray<ThreadMoveResult> = [
       { _tag: "moved", folder: "/repo/b", members: [thread] },
+      { _tag: "moved", folder: "/repo/my app ", members: [] },
       { _tag: "needs-project", folder: "/repo/a/docs", nestedIn: project },
       {
         _tag: "confirm",

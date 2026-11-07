@@ -118,6 +118,9 @@ const makeWorld = Effect.gen(function* () {
     "worktree/proot",
     "jjws/.jj",
     "jjws/sub",
+    "jjdefault/.jj/repo",
+    "jjdefault/sub",
+    "submodule",
     "managed/repo/branch/sub",
     "plain",
     "W",
@@ -130,9 +133,11 @@ const makeWorld = Effect.gen(function* () {
     "gitdir: /elsewhere/.git/worktrees/wt\n",
   );
   yield* fileSystem.writeFileString(at("jjws", ".jj", "repo"), "/elsewhere/.jj/repo\n");
+  yield* fileSystem.writeFileString(at("submodule", ".git"), "gitdir: ../.git/modules/submodule\n");
   yield* fileSystem.writeFileString(at("afile"), "");
   yield* fileSystem.symlink(at("projB"), at("link-B"));
   yield* fileSystem.symlink(at("W"), at("link-W"));
+  yield* fileSystem.symlink(at("scratch"), at("link-scratch"));
   const projects = [
     project("A", at("projA")),
     project("B", at("link-B")),
@@ -351,6 +356,18 @@ it.effect.each<{
     expected: () => worktreeRefused,
   },
   {
+    name: "rule 5: a folder in a default jj workspace",
+    thread: "t1",
+    typed: (world) => world.at("jjdefault", "sub"),
+    expected: () => worktreeRefused,
+  },
+  {
+    name: "rule 5: the managed worktrees directory itself",
+    thread: "t1",
+    typed: (world) => world.at("managed"),
+    expected: () => worktreeRefused,
+  },
+  {
     name: "rule 5: a folder under a managed worktrees directory",
     thread: "t1",
     typed: (world) => world.at("managed", "repo", "branch", "sub"),
@@ -371,6 +388,18 @@ it.effect.each<{
       folder: world.at("projA", "nested"),
       nestedIn: { projectId: "A", title: "A" },
     }),
+  },
+  {
+    name: "rule 6: a submodule needs a project",
+    thread: "t1",
+    typed: (world) => world.at("submodule"),
+    expected: (world) => ({ _tag: "needs-project", folder: world.at("submodule") }),
+  },
+  {
+    name: "rule 6: a deleted project's root needs a project",
+    thread: "t1",
+    typed: (world) => world.at("deleted"),
+    expected: (world) => ({ _tag: "needs-project", folder: world.at("deleted") }),
   },
   {
     name: "a missing folder is refused",
@@ -400,37 +429,79 @@ it.effect.each<{
   ),
 );
 
-it.effect("/cd to a deleted project's root treats the folder as having no project", () =>
+it.effect("a project root that fails to resolve fails the decision", () =>
   live(
     Effect.gen(function* () {
       const world = yield* makeWorld;
-      const result = yield* decide(world, request("t1", world.at("deleted")));
-      expect(result).toEqual({ _tag: "needs-project", folder: world.at("deleted") });
+      const error = yield* decide(world, request("t1", world.at("plain")), {
+        projects: [...world.projects, project("Unresolved", world.at("afile", "root"))],
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "ThreadMoveError",
+        message: expect.stringContaining(world.at("afile", "root")),
+      });
     }),
   ),
 );
 
+const competingScratch = (world: World) => ({
+  projects: [...world.projects, project("No project 2", world.at("link-scratch"))],
+});
+
 it.effect.each<{
   readonly name: string;
   readonly thread: string;
-  readonly overrides?: Partial<ThreadMoveDecisionInput>;
+  readonly overrides?: (world: World) => Partial<ThreadMoveDecisionInput>;
   readonly expected: object;
 }>([
   {
-    name: "refuses a thread already in No project",
+    name: "refuses a thread already in No project, whatever else resolves to the scratch root",
     thread: "tn",
+    overrides: competingScratch,
     expected: { _tag: "refused", reason: expect.stringContaining("already in No project") },
   },
   {
     name: "refuses when scratch folders are unavailable",
     thread: "t1",
-    overrides: { scratchRoot: undefined },
+    overrides: () => ({ scratchRoot: undefined }),
     expected: { _tag: "refused", reason: expect.stringContaining("unavailable") },
   },
   {
-    name: "moves a root thread at once",
+    name: "refuses when two projects resolve to the scratch root, naming them",
     thread: "t1",
-    expected: { _tag: "move", destination: { _tag: "scratch" }, leaving: null },
+    overrides: competingScratch,
+    expected: {
+      _tag: "refused",
+      projects: [
+        { projectId: "No project", title: "No project" },
+        { projectId: "No project 2", title: "No project 2" },
+      ],
+    },
+  },
+  {
+    name: "refuses an archived No project and asks to unarchive it",
+    thread: "t1",
+    overrides: (world) => ({
+      projects: world.projects.map((candidate) =>
+        candidate.id === "No project"
+          ? { ...candidate, archivedAt: "2026-01-02T00:00:00.000Z" }
+          : candidate,
+      ),
+    }),
+    expected: {
+      _tag: "refused",
+      reason: expect.stringContaining("Unarchive"),
+      projects: [{ projectId: "No project", title: "No project" }],
+    },
+  },
+  {
+    name: "moves a root thread at once into No project",
+    thread: "t1",
+    expected: {
+      _tag: "move",
+      destination: { _tag: "scratch", project: expect.objectContaining({ id: "No project" }) },
+      leaving: null,
+    },
   },
   {
     name: "asks first when the thread leaves a worktree, with a new scratch folder as destination",
@@ -441,7 +512,7 @@ it.effect.each<{
   live(
     Effect.gen(function* () {
       const world = yield* makeWorld;
-      const result = yield* decide(world, request(threadId, null), overrides);
+      const result = yield* decide(world, request(threadId, null), overrides?.(world));
       expect(result).toMatchObject(expected);
     }),
   ),
@@ -475,7 +546,6 @@ it.effect(
         );
         expect(members.toSorted()).toEqual(["t1", "t1-side", "t1-side-sub", "t1-sub"]);
         const result = yield* decide(world, request("t1", world.at("projB")));
-        expect(result).toMatchObject({ _tag: "move", members: expect.arrayContaining([]) });
         expect(result._tag === "move" ? result.members.map((member) => member.id) : []).toEqual(
           members,
         );
@@ -767,20 +837,12 @@ it.effect.each<{
       yield* before?.(world) ?? Effect.void;
       const result = yield* decide(world, request(threadId, world.at("projB")));
       expect(result).toMatchObject(expected(world));
-      expect(result).not.toHaveProperty("members");
-    }),
-  ),
-);
-
-it.effect("a confirmed move carries the same folder-left details", () =>
-  live(
-    Effect.gen(function* () {
-      const world = yield* makeWorld;
-      const asked = yield* decide(world, request("t2", world.at("projB")));
-      const confirmed = yield* decide(world, request("t2", world.at("projB"), { confirm: true }));
-      const { _tag, ...leaving } = asked as Extract<typeof asked, { _tag: "confirm" }>;
-      expect(_tag).toBe("confirm");
-      expect(confirmed).toMatchObject({ _tag: "move", destination: { _tag: "project" }, leaving });
+      const { _tag, ...leaving } = result as Extract<typeof result, { _tag: "confirm" }>;
+      const confirmed = yield* decide(
+        world,
+        request(threadId, world.at("projB"), { confirm: true }),
+      );
+      expect(confirmed).toEqual(expect.objectContaining({ _tag: "move", leaving }));
     }),
   ),
 );

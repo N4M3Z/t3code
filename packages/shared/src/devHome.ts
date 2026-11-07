@@ -6,7 +6,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 // Match worktrees/<name>; bare repos and GIT_COMMON_DIR need not use a directory named .git.
-const pointsAtLinkedWorktree = (gitFileContents: string, path: Path.Path): boolean => {
+export const pointsAtLinkedWorktree = (gitFileContents: string, path: Path.Path): boolean => {
   const gitdir = gitFileContents
     .split(/\r?\n/)
     .map((line) => line.trim())

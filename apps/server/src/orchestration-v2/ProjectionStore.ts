@@ -1441,6 +1441,27 @@ function inheritedRunFork(thread: Pick<OrchestrationV2AppThread, "forkedFrom" | 
     : null;
 }
 
+type RunFolder = Pick<OrchestrationV2Run, "id" | "cwd" | "repositoryRoot">;
+
+// Only runs that recorded a folder are listed; rows without one use the current folder.
+function runFoldersFor(
+  runs: ReadonlyArray<RunFolder>,
+  runIds: ReadonlySet<RunId | null>,
+): { readonly runFolders?: ReadonlyArray<RunFolder> } {
+  const runFolders = runs.flatMap((run) =>
+    run.cwd === undefined || !runIds.has(run.id)
+      ? []
+      : [
+          {
+            id: run.id,
+            cwd: run.cwd,
+            ...(run.repositoryRoot === undefined ? {} : { repositoryRoot: run.repositoryRoot }),
+          },
+        ],
+  );
+  return runFolders.length === 0 ? {} : { runFolders };
+}
+
 function buildVisibleTurnItems(input: {
   readonly projection: OrchestrationV2ThreadProjection;
   readonly sourceProjection: OrchestrationV2ThreadProjection | null;
@@ -3965,8 +3986,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         return {
           ...projection,
           visibleTurnItems,
-          runFolders: [...sourceProjection.runs, ...(sourceProjection.runFolders ?? [])].filter(
-            (run) => runIds.has(run.id),
+          ...runFoldersFor(
+            [...sourceProjection.runs, ...(sourceProjection.runFolders ?? [])],
+            runIds,
           ),
         };
       },
@@ -5973,7 +5995,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               items: conversationOnly
                 ? pageItems.filter((row) => isConversationHistoryItem(row.item))
                 : pageItems,
-              runFolders: index.runs.filter((run) => runIds.has(run.id)),
+              ...runFoldersFor(index.runs, runIds),
               nextCursor: bounded.hasMoreHistory ? bounded.nextCursor : page.nextCursor,
               hasMoreHistory: bounded.hasMoreHistory || page.hasMoreHistory,
             };

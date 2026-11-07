@@ -31,10 +31,6 @@
       "types": "./src/handoff.ts",
       "default": "./src/handoff.ts"
     },
-    "./thread-move": {
-      "types": "./src/threadMove.ts",
-      "default": "./src/threadMove.ts"
-    },
     "./device/stream": {
       "types": "./src/device/stream.ts",
       "default": "./src/device/stream.ts"

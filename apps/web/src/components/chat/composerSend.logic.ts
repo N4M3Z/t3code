@@ -1,4 +1,9 @@
-import type { EnvironmentId, ThreadContextRecord } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ThreadContextRecord,
+  ThreadMoveInput,
+  ThreadMoveResult,
+} from "@t3tools/contracts";
 import { collectInlineContextIds } from "../../lib/composerContextReferences";
 
 /** Attached threads the prompt still links to; replacing linked text leaves stale records. */
@@ -80,7 +85,6 @@ export function approvalRedirectNotice(input: {
   return null;
 }
 
-/** Why a typed `/cd` or `/no` stops in the composer, or null to ask the server. */
 export function folderMoveBlockReason(input: {
   readonly supported: boolean;
   readonly isLocalDraftThread: boolean;
@@ -92,4 +96,48 @@ export function folderMoveBlockReason(input: {
   if (input.requestPending) return "Answer the pending question or approval first.";
   if (!input.textOnly) return "Remove the attachments and context, then send it again.";
   return null;
+}
+
+type ThreadMoveQuestion = Extract<ThreadMoveResult, { _tag: "needs-project" | "confirm" }>;
+type ThreadMoveOutcome = Extract<ThreadMoveResult, { _tag: "moved" | "refused" }>;
+
+export async function runThreadMove(
+  input: ThreadMoveInput,
+  move: (input: ThreadMoveInput) => Promise<ThreadMoveResult>,
+  ask: (question: ThreadMoveQuestion) => Promise<boolean>,
+): Promise<ThreadMoveOutcome | null> {
+  const result = await move(input);
+  if (result._tag === "moved" || result._tag === "refused") return result;
+  if (!(await ask(result))) return null;
+  return runThreadMove(
+    result._tag === "needs-project" ? { ...input, addProject: true } : { ...input, confirm: true },
+    move,
+    ask,
+  );
+}
+
+/** The line ending in "?" is the dialog's title; the other lines are its description. */
+export function threadMoveQuestionText(question: ThreadMoveQuestion): string {
+  if (question._tag === "needs-project") {
+    const nested = question.nestedIn ? ` nested in ${question.nestedIn.title}` : "";
+    return `Create a project${nested} for ${question.folder} and move this thread there?`;
+  }
+  const wayBack =
+    question.wayBack === "cd"
+      ? `/cd ${question.from} brings it back as a root thread.`
+      : question.wayBack === "add-project"
+        ? `Adding ${question.from} as a project first makes /cd ${question.from} bring the thread back.`
+        : "No command brings it back. Turn into project before the move keeps a way back.";
+  return [
+    `Move this thread out of ${question.from}?`,
+    `Its next turn runs in ${question.to ?? "a new scratch folder"}.`,
+    question.staysOnDisk,
+    wayBack,
+    ...(question.project
+      ? [`The folder stays the root of project ${question.project.title}.`]
+      : []),
+    ...(question.otherThreads.length > 0
+      ? [`Still working there: ${question.otherThreads.map((thread) => thread.title).join(", ")}.`]
+      : []),
+  ].join("\n");
 }

@@ -342,7 +342,6 @@ type FolderMoveCommand =
   | { readonly command: "cd"; readonly path: string | null }
   | { readonly command: "no"; readonly argument: string };
 
-/** The path after `/cd` keeps its spaces once one pair of surrounding quotes is stripped. */
 export function parseFolderMoveCommand(text: string): FolderMoveCommand | null {
   const match = /^\/(cd|no)(?:\s+([\s\S]*))?$/i.exec(text.trim());
   if (!match) return null;

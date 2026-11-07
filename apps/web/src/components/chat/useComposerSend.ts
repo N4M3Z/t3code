@@ -60,7 +60,6 @@ import {
   parseStandaloneComposerSlashCommand,
 } from "../../composer-logic";
 import { requestConfirmDialog } from "../../confirmDialog";
-import { runThreadMove, threadMoveQuestionText } from "@t3tools/client-runtime/thread-move";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { resolvePlanFollowUpSubmission } from "../../proposedPlan";
 import { type ChatMessage } from "../../types";
@@ -102,6 +101,8 @@ import {
   loadBalancingSendWarning,
   multipleModelSendBlock,
   referencedThreadContexts,
+  runThreadMove,
+  threadMoveQuestionText,
 } from "./composerSend.logic";
 import { usePlanFollowUpSend } from "./useProposedPlanSend";
 import { useMultipleModelSend } from "./useMultipleModelSend";
@@ -533,6 +534,7 @@ export function useComposerSend(input: ComposerSendInput) {
         refuse("Usage: /no, with nothing after it.");
         return;
       }
+      sendInFlightRef.current = true;
       const outcome = await runThreadMove(
         {
           threadId: activeThread.id,
@@ -548,7 +550,9 @@ export function useComposerSend(input: ComposerSendInput) {
           };
         },
         async (question) => (await requestConfirmDialog(threadMoveQuestionText(question))) ?? false,
-      );
+      ).finally(() => {
+        sendInFlightRef.current = false;
+      });
       if (outcome === null) return;
       if (outcome._tag === "refused") {
         refuse(outcome.reason);

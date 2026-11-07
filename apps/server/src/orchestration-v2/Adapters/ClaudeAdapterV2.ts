@@ -5406,7 +5406,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               return { kind: "command", label, outcome };
           }
         });
-        const requestedContinuations = yield* Ref.make(new Set<string>());
+        const requestedContinuations = yield* Ref.make(new Map<string, symbol>());
         const absorbedWakes = yield* Ref.make(new Set<string>());
         const heldProposedPlansByToolUseId = new Map<string, string>();
         const runtimeContext = yield* Effect.context<never>();
@@ -5863,10 +5863,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             return updated;
           });
 
-        const releaseContinuationRequest = (nativeThreadId: string) =>
+        const releaseContinuationRequest = (nativeThreadId: string, request?: symbol) =>
           Ref.update(requestedContinuations, (current) => {
-            if (!current.has(nativeThreadId)) return current;
-            const updated = new Set(current);
+            if (
+              request === undefined
+                ? !current.has(nativeThreadId)
+                : current.get(nativeThreadId) !== request
+            ) {
+              return current;
+            }
+            const updated = new Map(current);
             updated.delete(nativeThreadId);
             return updated;
           });
@@ -8634,8 +8640,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (current.has(wakeInput.nativeThreadId)) {
               return [false, current] as const;
             }
-            const updated = new Set(current);
-            updated.add(wakeInput.nativeThreadId);
+            const updated = new Map(current);
+            updated.set(wakeInput.nativeThreadId, Symbol("continuation request"));
             return [true, updated] as const;
           });
           if (!shouldOffer) {
@@ -11171,14 +11177,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
-            // A continuation owns its request until its drain releases it; ending earlier releases it for a later wake.
-            const continuationRequest = { held: isClaudeProviderContinuationTurn(turnInput) };
-            yield* Effect.addFinalizer(() => {
-              const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
-              return continuationRequest.held && typeof nativeThreadId === "string"
-                ? releaseContinuationRequest(nativeThreadId)
-                : Effect.void;
-            });
+            // A continuation owns the request it starts under until its drain releases it; ending
+            // earlier releases that request for a later wake, never one registered since.
+            const requestNativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
+            const continuationRequest =
+              isClaudeProviderContinuationTurn(turnInput) &&
+              typeof requestNativeThreadId === "string"
+                ? (yield* Ref.get(requestedContinuations)).get(requestNativeThreadId)
+                : undefined;
+            yield* Effect.addFinalizer(() =>
+              continuationRequest !== undefined && typeof requestNativeThreadId === "string"
+                ? releaseContinuationRequest(requestNativeThreadId, continuationRequest)
+                : Effect.void,
+            );
             modelCatalog = yield* loadModelCatalog;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -11407,12 +11418,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
                 yield* attachTurn;
                 const drained = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
-                yield* Effect.uninterruptible(
-                  Effect.suspend(() => {
-                    continuationRequest.held = false;
-                    return releaseContinuationRequest(nativeThreadId);
-                  }),
-                );
+                yield* releaseContinuationRequest(nativeThreadId);
                 const wakeAbsorbed = (yield* Ref.get(absorbedWakes)).has(nativeThreadId);
                 yield* forgetAbsorbedWake(nativeThreadId);
                 if (drained.length === 0) {

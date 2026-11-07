@@ -3299,6 +3299,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly freshQueueOnReopen?: boolean;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
+    readonly onUsageLimits?: ClaudeAdapterV2.ClaudeAdapterV2Options["onUsageLimits"];
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -3357,6 +3358,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
         settings: options?.settings ?? DEFAULT_CLAUDE_SETTINGS,
         ...(options?.modelCatalog === undefined ? {} : { modelCatalog: options.modelCatalog }),
+        ...(options?.onUsageLimits === undefined ? {} : { onUsageLimits: options.onUsageLimits }),
         environment: options?.environment ?? {},
         attachmentsDir,
         fileSystem,
@@ -12407,6 +12409,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     "background work",
     "a missing append-system-prompt file",
     "a wake that opens during the launch file read",
+    "background work that starts during its launch file read",
+    "background work that starts during a user turn's launch file read",
+    "a frame still in handling when it reaches the close",
   ] as const)("requests a new continuation after one in a new cwd hits %s", (cause) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -12415,33 +12420,45 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const second = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-second-" });
       yield* fileSystem.writeFileString(path.join(first, "prompt.md"), "Prompt sentinel\n");
       const gatedRead =
-        cause === "a wake that opens during the launch file read"
-          ? path.join(second, "prompt.md")
-          : undefined;
+        cause === "background work" || cause === "a missing append-system-prompt file"
+          ? undefined
+          : path.join(second, "prompt.md");
       const reading = yield* Deferred.make<void>();
       const gate = yield* Deferred.make<void>();
       if (gatedRead !== undefined) {
         yield* fileSystem.writeFileString(gatedRead, "Prompt sentinel\n");
       }
-      const harness = yield* makeWakeHarnessWithOptions(
-        cause === "background work"
-          ? undefined
+      let closes = 0;
+      const handlingLimit = yield* Deferred.make<void>();
+      const releaseLimit = yield* Deferred.make<void>();
+      const harness = yield* makeWakeHarnessWithOptions({
+        ...(cause === "background work"
+          ? {}
           : {
               settings: {
                 ...DEFAULT_CLAUDE_SETTINGS,
                 launchArgs: "--append-system-prompt-file prompt.md",
               },
-            },
-      ).pipe(
+            }),
+        freshQueueOnReopen: true,
+        close: () =>
+          Effect.sync(() => {
+            closes++;
+          }),
+        onUsageLimits: () =>
+          Deferred.succeed(handlingLimit, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseLimit)),
+          ),
+      }).pipe(
         Effect.provideService(
           FileSystem.FileSystem,
           FileSystem.make({
             ...fileSystem,
             readFile: (filePath) =>
               filePath === gatedRead
-                ? Deferred.succeed(reading, undefined).pipe(
-                    Effect.andThen(Deferred.await(gate)),
-                    Effect.andThen(fileSystem.readFile(filePath)),
+                ? fileSystem.readFile(filePath).pipe(
+                    Effect.tap(() => Deferred.succeed(reading, undefined)),
+                    Effect.tap(() => Deferred.await(gate)),
                   )
                 : fileSystem.readFile(filePath),
           }),
@@ -12465,21 +12482,20 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         tool_use_id: "toolu_second_background_task",
         session_id: WAKE_NATIVE_SESSION,
       };
+      const secondTaskStarted = claudeSdkFrame({
+        ...secondTask,
+        type: "system",
+        subtype: "task_started",
+        description: "Second background build",
+        is_backgrounded: true,
+        task_type: "local_bash",
+        uuid: "00000000-0000-4000-8000-00000000c101",
+      });
 
       yield* harness.runtime.startTurn(turn(1, first, false));
       yield* harness.offerAndWait(wakeTaskStarted);
       if (cause === "background work") {
-        yield* harness.offerAndWait(
-          claudeSdkFrame({
-            ...secondTask,
-            type: "system",
-            subtype: "task_started",
-            description: "Second background build",
-            is_backgrounded: true,
-            task_type: "local_bash",
-            uuid: "00000000-0000-4000-8000-00000000c101",
-          }),
-        );
+        yield* harness.offerAndWait(secondTaskStarted);
       }
       yield* harness.offerAndWait(turnOneResult);
       yield* Queue.take(harness.terminalReceipts);
@@ -12503,9 +12519,44 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(harness.getOpenedOptions()?.cwd, first);
         yield* harness.awaitTerminal(2);
         assert.equal(harness.terminalEvents()[1]?.status, "completed");
+      } else if (cause === "a frame still in handling when it reaches the close") {
+        const limited = yield* Effect.forkScoped(
+          harness.offerAndWait(
+            claudeSdkFrame({
+              type: "rate_limit_event",
+              rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.5 },
+              uuid: "00000000-0000-4000-8000-00000000c105",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          ),
+        );
+        yield* Deferred.await(handlingLimit);
+        const started = yield* Effect.forkScoped(harness.runtime.startTurn(turn(2, second, true)));
+        yield* Deferred.await(reading);
+        // Released from a fork, the continuation runs inline from its last read until it suspends.
+        const closesWhileHandling = yield* Effect.forkScoped(
+          Deferred.succeed(gate, undefined).pipe(Effect.map(() => closes)),
+        );
+        assert.equal(yield* Fiber.join(closesWhileHandling), 0);
+        yield* Deferred.succeed(releaseLimit, undefined);
+        yield* Fiber.join(limited);
+        yield* Fiber.join(started);
+        assert.equal(harness.getOpenedOptions()?.cwd, second);
+        yield* harness.awaitTerminal(2);
+        assert.equal(harness.terminalEvents()[1]?.status, "completed");
       } else {
-        const refused = yield* harness.runtime.startTurn(turn(2, second, true)).pipe(Effect.flip);
-        if (cause === "background work") {
+        const userTurnFirst =
+          cause === "background work that starts during a user turn's launch file read";
+        const started = yield* Effect.forkScoped(
+          harness.runtime.startTurn(turn(2, second, !userTurnFirst)).pipe(Effect.flip),
+        );
+        if (gatedRead !== undefined) {
+          yield* Deferred.await(reading);
+          yield* harness.offerAndWait(secondTaskStarted);
+          yield* Deferred.succeed(gate, undefined);
+        }
+        const refused = yield* Fiber.join(started);
+        if (cause.startsWith("background work")) {
           assert.instanceOf(
             refused.cause,
             ClaudeAdapterV2.ClaudeBackgroundWorkBlocksQueryReplacementError,
@@ -12513,10 +12564,19 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         } else {
           assert.instanceOf(refused.cause, ClaudeAdapterV2.ClaudeAppendSystemPromptFileError);
         }
+        if (userTurnFirst) {
+          const continuation = yield* harness.runtime
+            .startTurn(turn(3, second, true))
+            .pipe(Effect.flip);
+          assert.instanceOf(
+            continuation.cause,
+            ClaudeAdapterV2.ClaudeBackgroundWorkBlocksQueryReplacementError,
+          );
+        }
       }
-      assert.lengthOf(harness.processQueues, 1);
+      assert.lengthOf(harness.processQueues, closes + 1);
 
-      if (cause === "background work") {
+      if (cause.startsWith("background work")) {
         yield* harness.offerAndWait(
           claudeSdkFrame({
             ...secondTask,

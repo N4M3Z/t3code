@@ -10901,15 +10901,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           // Replacing this thread's process kills its background work, even with a new native identity.
-          if (
-            existing !== null &&
-            (existing.nativeThreadId === nativeThreadId ||
-              existing.lastTurn?.input.threadId === turnInput.threadId) &&
-            !existing.stopping &&
-            (yield* liveProcessRunsBackgroundWork(existing))
-          ) {
-            return yield* new ClaudeBackgroundWorkBlocksQueryReplacementError();
-          }
+          const refuseIfBackgroundWorkRuns = Effect.gen(function* () {
+            if (
+              existing !== null &&
+              (existing.nativeThreadId === nativeThreadId ||
+                existing.lastTurn?.input.threadId === turnInput.threadId) &&
+              !existing.stopping &&
+              (yield* liveProcessRunsBackgroundWork(existing))
+            ) {
+              return yield* new ClaudeBackgroundWorkBlocksQueryReplacementError();
+            }
+          });
+          yield* refuseIfBackgroundWorkRuns;
 
           // Read before closing the live process so a bad path leaves it running.
           const appendSystemPromptFileText = yield* readClaudeAppendSystemPromptFile({
@@ -10926,17 +10929,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           if (existing !== null) {
-            // Wake frames land under the SDK message lock; a continuation decides and closes under it so a
-            // wake turn that opened during the reads above keeps its process. A stopping query may be
-            // closing under that lock already.
-            const closeUnlessWakeRuns = Effect.gen(function* () {
+            // SDK frames land under the SDK message lock; decide and close under it so a wake turn or
+            // background work that started during the reads above keeps its process. A stopping query may
+            // be closing under that lock already.
+            const closeUnlessWorkRuns = Effect.gen(function* () {
               if (yield* keepsRunningWake) return true;
+              yield* refuseIfBackgroundWorkRuns;
               yield* existing.query.close.pipe(Effect.ignore);
               return false;
             });
-            const kept = yield* isClaudeProviderContinuationTurn(turnInput) && !existing.stopping
-              ? sdkMessageLock.withPermits(1)(closeUnlessWakeRuns)
-              : closeUnlessWakeRuns;
+            const kept = yield* existing.stopping
+              ? closeUnlessWorkRuns
+              : sdkMessageLock.withPermits(1)(closeUnlessWorkRuns);
             if (kept) return existing;
             if (existing.nativeThreadId !== nativeThreadId) {
               yield* clearWakeStateForNativeThread(existing.nativeThreadId);
@@ -11167,6 +11171,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+            // A continuation owns its request until its drain releases it; ending earlier releases it for a later wake.
+            const continuationRequest = { held: isClaudeProviderContinuationTurn(turnInput) };
+            yield* Effect.addFinalizer(() => {
+              const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
+              return continuationRequest.held && typeof nativeThreadId === "string"
+                ? releaseContinuationRequest(nativeThreadId)
+                : Effect.void;
+            });
             modelCatalog = yield* loadModelCatalog;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -11395,7 +11407,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
                 yield* attachTurn;
                 const drained = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
-                yield* releaseContinuationRequest(nativeThreadId);
+                yield* Effect.uninterruptible(
+                  Effect.suspend(() => {
+                    continuationRequest.held = false;
+                    return releaseContinuationRequest(nativeThreadId);
+                  }),
+                );
                 const wakeAbsorbed = (yield* Ref.get(absorbedWakes)).has(nativeThreadId);
                 yield* forgetAbsorbedWake(nativeThreadId);
                 if (drained.length === 0) {
@@ -11503,18 +11520,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           (effect, turnInput) =>
             effect.pipe(
               Effect.scoped,
-              // A continuation that fails before attaching never drains its wake; let a later wake frame ask again.
-              // An attached one released its request in the drain, and a newer wake may hold the next one.
-              Effect.onError(() => {
-                const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
-                return isClaudeProviderContinuationTurn(turnInput) &&
-                  typeof nativeThreadId === "string"
-                  ? Effect.gen(function* () {
-                      if ((yield* Ref.get(queryContext))?.lastTurn?.input === turnInput) return;
-                      yield* releaseContinuationRequest(nativeThreadId);
-                    })
-                  : Effect.void;
-              }),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapter.ProviderAdapterTurnStartError({

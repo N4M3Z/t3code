@@ -24,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -34,9 +35,11 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
+import * as EventStore from "./EventStore.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
+import { nativeStorageFolder } from "./NativeStorageFolder.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -134,6 +137,7 @@ export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
   | EventSink.EventSinkV2
+  | EventStore.EventStoreV2
   | ContextHandoffService.ContextHandoffServiceV2
   | IdAllocator.IdAllocatorV2
   | FileSystem.FileSystem
@@ -151,6 +155,7 @@ export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const eventStore = yield* EventStore.EventStoreV2;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -226,6 +231,39 @@ export const layer: Layer.Layer<
           path: worktreePath,
         });
       },
+    );
+
+    // The projection keeps one root scope row per thread, so earlier runs' folders come from events.
+    const readNativeStorageFolder = Effect.fn("ProviderTurnStartService.readNativeStorageFolder")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly providerThread: Parameters<typeof nativeStorageFolder>[0]["providerThread"];
+      }) {
+        const { runs, attempts } = yield* projectionStore.getThreadRecords(input.threadId, [
+          "runs",
+          "attempts",
+        ]);
+        const scopeEvents = yield* eventStore
+          .read({ threadId: input.threadId, eventType: "checkpoint-scope.created" })
+          .pipe(Stream.runCollect);
+        return nativeStorageFolder({
+          providerThread: input.providerThread,
+          runs,
+          attempts,
+          checkpointScopes: Array.from(scopeEvents).flatMap(({ event }) =>
+            event.type === "checkpoint-scope.created" ? [event.payload] : [],
+          ),
+        });
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("orchestration-v2.native-storage-folder-read-failed", {
+              threadId: input.threadId,
+              cause,
+            }).pipe(Effect.as(undefined)),
+          ),
+        ),
     );
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
@@ -1174,9 +1212,18 @@ export const layer: Layer.Layer<
                 )
                 .map((attempt) => attempt.id),
             );
+            const sourceNativeStorageFolder =
+              session.driver === "claudeAgent" &&
+              sourceProviderThread.nativeStorageFolder === undefined
+                ? yield* readNativeStorageFolder({
+                    threadId: nativeForkTransfer.sourceThreadId,
+                    providerThread: sourceProviderThread,
+                  })
+                : undefined;
             return yield* loadFromProvider(
               session.forkThread({
                 sourceProviderThread,
+                ...(sourceNativeStorageFolder === undefined ? {} : { sourceNativeStorageFolder }),
                 sourceProviderTurns: sourceProjection.providerTurns.filter(
                   (turn) =>
                     turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId),
@@ -1745,6 +1792,19 @@ export const layer: Layer.Layer<
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         loadRunInterruptReason: runControls.loadRunInterruptReason,
+        ...(runningProviderThread.nativeStorageFolder === undefined
+          ? {
+              readNativeStorageFolder: yield* Effect.cached(
+                readNativeStorageFolder({
+                  threadId: projection.thread.id,
+                  providerThread: {
+                    id: runningProviderThread.id,
+                    nativeThreadRef: runningProviderThread.nativeThreadRef,
+                  },
+                }),
+              ),
+            }
+          : {}),
         message: {
           messageId: message.id,
           text: userText,

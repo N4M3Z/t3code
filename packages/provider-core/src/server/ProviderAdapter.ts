@@ -490,6 +490,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /** Reads the native session's storage folder from run history, for a `providerThread` that has not recorded one. */
+  readonly readNativeStorageFolder?: Effect.Effect<string | undefined>;
 }
 
 export interface ProviderAdapterV2SteerInput {
@@ -553,6 +555,8 @@ export interface ProviderAdapterV2ForkThreadInput {
   readonly ownerNodeId?: NodeId;
   readonly modelSelection?: ModelSelection;
   readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
+  /** The source session's storage folder from run history, when `sourceProviderThread` has not recorded one. */
+  readonly sourceNativeStorageFolder?: string;
 }
 
 export interface ProviderAdapterV2EventSubscription {

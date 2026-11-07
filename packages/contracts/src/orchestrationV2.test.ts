@@ -452,6 +452,15 @@ describe("orchestration V2 contracts", () => {
     expect(providerThread.pendingBackgroundTasks).toEqual([]);
     expect(providerThread.contextUsage).toBeNull();
     expect(providerThread.nativeMetadata).toBeNull();
+    expect(providerThread).not.toHaveProperty("nativeStorageFolder");
+    expect(
+      decodeOrchestrationV2ProviderThreadJson(
+        encodeOrchestrationV2ProviderThreadJson({
+          ...providerThread,
+          nativeStorageFolder: "/workspace/project",
+        }),
+      ).nativeStorageFolder,
+    ).toBe("/workspace/project");
 
     const runtimeThread = decodeOrchestrationV2ProviderThread({
       id: "provider-thread-2",

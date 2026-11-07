@@ -2440,7 +2440,11 @@ describe("ClaudeAdapterV2 attachments", () => {
 });
 
 describe("ClaudeAdapterV2 native fork", () => {
-  it.effect("forks at the source assistant cursor and resumes the forked session", () =>
+  it.effect.each([
+    { storage: "the current folder", dir: "/workspace" },
+    { storage: "its record", recorded: "/repo/a", history: "/repo/h", dir: "/repo/a" },
+    { storage: "run history", history: "/repo/h", dir: "/repo/h" },
+  ])("forks at the source cursor in $storage and resumes the fork", ({ recorded, history, dir }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -2520,7 +2524,8 @@ describe("ClaudeAdapterV2 native fork", () => {
         const now = yield* DateTime.now;
         const providerTurnId = ProviderTurnId.make("provider-turn-claude-source");
         const forkedProviderThread = yield* runtime.forkThread({
-          sourceProviderThread,
+          sourceProviderThread: { ...sourceProviderThread, nativeStorageFolder: recorded },
+          ...(history === undefined ? {} : { sourceNativeStorageFolder: history }),
           sourceProviderTurns: [
             {
               id: providerTurnId,
@@ -2546,7 +2551,7 @@ describe("ClaudeAdapterV2 native fork", () => {
           {
             sessionId: "source-native-session",
             options: {
-              dir: "/workspace",
+              dir,
               upToMessageId: "assistant-message-cursor",
             },
             environment: { CLAUDE_CONFIG_DIR: "/custom/claude-home" },
@@ -2557,6 +2562,7 @@ describe("ClaudeAdapterV2 native fork", () => {
         assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, "forked-native-session");
         assert.equal(forkedProviderThread.forkedFrom?.providerThreadId, sourceProviderThread.id);
         assert.equal(forkedProviderThread.forkedFrom?.providerTurnId, providerTurnId);
+        assert.equal(forkedProviderThread.nativeStorageFolder, dir);
 
         yield* runtime.startTurn({
           appThread: {
@@ -19143,5 +19149,334 @@ describe("ClaudeAdapterV2 query message stream", () => {
       yield* Scope.close(scope, Exit.void);
       assert.isTrue(closed);
     }),
+  );
+});
+
+describe("ClaudeAdapterV2 session storage folder", () => {
+  const SESSION = "native-session-storage-folder";
+  const SEND = "toolu-storage-folder-sendmessage";
+  const sdkFrame = (frame: object) => ({ session_id: SESSION, ...frame }) as unknown as SDKMessage;
+  const policyIn = (cwd: string) =>
+    ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd,
+    });
+  const resultFrame = sdkFrame({
+    type: "result",
+    subtype: "success",
+    duration_ms: 1,
+    duration_api_ms: 1,
+    is_error: false,
+    num_turns: 1,
+    result: "Done.",
+    stop_reason: "end_turn",
+    total_cost_usd: 0,
+    usage: {
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+    modelUsage: {},
+    permission_denials: [],
+    uuid: "00000000-0000-4000-8000-00000000f001",
+    terminal_reason: "completed",
+  });
+  const layer = Layer.mergeAll(
+    IdAllocator.layer,
+    McpProviderSessions.layer,
+    NodeServices.layer,
+    NodeCrypto.layer,
+  );
+
+  const makeHarness = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+    const openedQueries: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput> = [];
+    let refuseOffer = false;
+    const lookups = yield* Queue.unbounded<ClaudeAdapterV2.ClaudeAgentSdkSubagentLookupInput>();
+    const updates = yield* Queue.unbounded<OrchestrationV2ProviderThread>();
+    const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+      instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+      settings: DEFAULT_CLAUDE_SETTINGS,
+      environment: {},
+      attachmentsDir: yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-claude-v2-storage-folder-",
+      }),
+      fileSystem,
+      path: yield* Path.Path,
+      random: yield* SecureRandom.SecureRandom,
+      idAllocator: yield* IdAllocator.IdAllocatorV2,
+      queryRunner: {
+        allocateSessionId: Effect.succeed(SESSION),
+        open: (input) =>
+          Effect.sync(() => {
+            openedQueries.push(input);
+            return {
+              messages: Stream.fromQueue(sdkMessages),
+              offer: () =>
+                refuseOffer
+                  ? Effect.fail(
+                      new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                        method: "offer",
+                        cause: "rejected offer",
+                      }),
+                    )
+                  : Effect.void,
+              setModel: () => Effect.void,
+              applyFlagSettings: () => Effect.void,
+              setPermissionMode: () => Effect.void,
+              backgroundTasks: () => Effect.succeed(false),
+              mcpServerStatus: Effect.succeed([]),
+              readMcpResource: () => Effect.die("unexpected MCP resource read"),
+              callMcpTool: () => Effect.die("unexpected MCP tool call"),
+              listPermissionRules: Effect.succeed([]),
+              stopTask: () => Effect.void,
+              interrupt: Effect.void,
+              close: Effect.void,
+            };
+          }),
+        forkSession: () => Effect.die("unused forkSession"),
+        subagentLaunchToolUseId: (input) => Queue.offer(lookups, input).pipe(Effect.as(null)),
+        assertComplete: Effect.void,
+      },
+    });
+    const threadId = ThreadId.make("thread-claude-storage-folder");
+    const runtime = yield* adapter.openSession({
+      threadId,
+      providerSessionId: ProviderSessionId.make("provider-session-claude-storage-folder"),
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      runtimePolicy: policyIn("/repo/b"),
+    });
+    yield* runtime.events.pipe(
+      Stream.runForEach((event) =>
+        event.type === "provider_thread.updated"
+          ? Queue.offer(updates, event.providerThread)
+          : Effect.void,
+      ),
+      Effect.forkScoped,
+    );
+    const providerThread = yield* runtime.ensureThread({
+      threadId,
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      runtimePolicy: policyIn("/repo/b"),
+    });
+    const withRecord = (recorded: string | undefined) =>
+      recorded === undefined
+        ? providerThread
+        : { ...providerThread, nativeStorageFolder: recorded };
+    const startTurn = Effect.fn("startTurn")(function* (input: {
+      readonly recorded?: string;
+      readonly history?: string;
+      readonly resumed: boolean;
+      readonly refuseOffer?: boolean;
+    }) {
+      refuseOffer = input.refuseOffer === true;
+      yield* runtime.startTurn({
+        ...makeClaudeTestTurnInput({
+          threadId,
+          providerThread: withRecord(input.recorded),
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-claude-storage-folder"),
+          text: "Ask the auditor again.",
+          attachments: [],
+          nativeThreadHasTurns: input.resumed,
+          runtimePolicy: policyIn("/repo/b"),
+        }),
+        ...(input.history === undefined
+          ? {}
+          : { readNativeStorageFolder: Effect.succeed(input.history) }),
+      });
+    });
+    return {
+      runtime,
+      sdkMessages,
+      openedQueries,
+      lookups,
+      updates,
+      withRecord,
+      startTurn,
+    };
+  });
+
+  it.effect.each([
+    { name: "a new session", resumed: false, expected: "/repo/b" },
+    // Published when the open succeeds, so a refused prompt or an early exit cannot lose it.
+    { name: "a refused prompt", resumed: false, refuseOffer: true, expected: "/repo/b" },
+    // A first turn in A failed before Claude wrote the session; after a root edit B creates it.
+    { name: "a session created again", recorded: "/repo/a", resumed: false, expected: "/repo/b" },
+    { name: "a resumed session", resumed: true, expected: undefined },
+    { name: "a resumed session's record", recorded: "/repo/a", resumed: true, expected: "/repo/a" },
+  ])("records the query's folder only when it opens without resume: $name", (scenario) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        const started = yield* harness.startTurn(scenario).pipe(Effect.exit);
+        assert.equal(Exit.isFailure(started), scenario.refuseOffer === true);
+        if (scenario.refuseOffer !== true) yield* Queue.offer(harness.sdkMessages, resultFrame);
+        const updated = yield* Queue.take(harness.updates);
+
+        assert.equal(
+          harness.openedQueries[0]?.options.resume,
+          scenario.resumed ? SESSION : undefined,
+        );
+        assert.equal(updated.nativeStorageFolder, scenario.expected);
+      }).pipe(Effect.provide(layer)),
+    ),
+  );
+
+  it.effect.each([
+    {
+      name: "the recorded folder",
+      recorded: "/repo/a",
+      history: "/repo/h",
+      resumed: true,
+      expected: "/repo/a",
+    },
+    {
+      name: "run history without a record",
+      history: "/repo/h",
+      resumed: true,
+      expected: "/repo/h",
+    },
+    { name: "the current folder without either", resumed: true, expected: "/repo/b" },
+    {
+      name: "the folder its query just created it in",
+      history: "/repo/h",
+      resumed: false,
+      expected: "/repo/b",
+    },
+  ])("looks up a resumed subagent in $name", (scenario) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* harness.startTurn(scenario);
+        yield* Queue.offerAll(harness.sdkMessages, [
+          sdkFrame({
+            type: "assistant",
+            message: {
+              model: "claude-sonnet-4-6",
+              id: "msg_storage_folder_sendmessage",
+              type: "message",
+              role: "assistant",
+              content: [{ type: "tool_use", id: SEND, name: "SendMessage", input: {} }],
+            },
+            parent_tool_use_id: null,
+            uuid: "00000000-0000-4000-8000-00000000f002",
+          }),
+          sdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: "task-storage-folder",
+            tool_use_id: SEND,
+            description: "Audit recent commits",
+            task_type: "local_agent",
+            uuid: "00000000-0000-4000-8000-00000000f003",
+          }),
+        ]);
+        const lookup = yield* Queue.take(harness.lookups);
+
+        assert.equal(lookup.sessionId, SESSION);
+        assert.equal(lookup.dir, scenario.expected);
+      }).pipe(Effect.provide(layer)),
+    ),
+  );
+
+  it.effect.each([
+    { name: "its record", recorded: "/repo/a" },
+    { name: "run history", history: "/repo/a" },
+  ])("forks a session created in the old root, found from $name", ({ recorded, history }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-storage-folder-config-",
+        });
+        const sessionId = "22222222-2222-4222-8222-222222222222";
+        const projectDir = path.join(configDir, "projects", "-repo-a");
+        const entry = (uuid: string, parentUuid: string | null, message: unknown) => ({
+          type: parentUuid === null ? "user" : "assistant",
+          uuid,
+          parentUuid,
+          sessionId,
+          cwd: "/repo/a",
+          isSidechain: false,
+          timestamp: "2026-11-01T00:00:00.000Z",
+          message,
+        });
+        const question = "cccccccc-0000-4000-8000-000000000001";
+        yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+        yield* fileSystem.writeFileString(
+          path.join(projectDir, `${sessionId}.jsonl`),
+          [
+            entry(question, null, { role: "user", content: "Remember the number 42." }),
+            entry("cccccccc-0000-4000-8000-000000000002", question, {
+              role: "assistant",
+              content: [{ type: "text", text: "Noted." }],
+            }),
+          ]
+            .map((line) => JSON.stringify(line))
+            .join("\n"),
+        );
+        const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+          instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+          settings: DEFAULT_CLAUDE_SETTINGS,
+          environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+          attachmentsDir: yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-v2-storage-folder-",
+          }),
+          fileSystem,
+          path,
+          random: yield* SecureRandom.SecureRandom,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          queryRunner: yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+        });
+        const threadId = ThreadId.make("thread-claude-storage-folder-root-edit");
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-claude-root-edit"),
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy: policyIn("/repo/b"),
+        });
+        const created = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy: policyIn("/repo/b"),
+        });
+        const forked = yield* runtime.forkThread({
+          sourceProviderThread: {
+            ...created,
+            nativeThreadRef: {
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeId: sessionId,
+              strength: "strong",
+            },
+            ...(recorded === undefined ? {} : { nativeStorageFolder: recorded }),
+          },
+          targetThreadId: ThreadId.make("thread-claude-storage-folder-root-edit-fork"),
+          ...(history === undefined ? {} : { sourceNativeStorageFolder: history }),
+        });
+
+        const forkedId = forked.nativeThreadRef?.nativeId;
+        assert.isString(forkedId);
+        assert.notEqual(forkedId, sessionId);
+        assert.include(
+          yield* fileSystem.readFileString(path.join(projectDir, `${forkedId}.jsonl`)),
+          "Remember the number 42.",
+        );
+        // Only a head lookup in the same storage finds the forked transcript's last message.
+        assert.isString(forked.nativeMetadata?.forkHeadMessageId);
+        assert.equal(forked.nativeStorageFolder, "/repo/a");
+      }).pipe(
+        Effect.provide(ClaudeAdapterV2.layerQueryRunner.pipe(Layer.provide(PortScanner.layerTest))),
+        Effect.provideService(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+        Effect.provide(layer),
+      ),
+    ),
   );
 });

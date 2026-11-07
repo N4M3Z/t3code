@@ -1,8 +1,8 @@
 import {
   CommandId,
-  type Project,
   ProjectId,
   type ProviderInstanceId,
+  type ProviderThreadId,
   type ThreadId,
   ThreadMoveError,
   type ThreadMoveInput,
@@ -18,11 +18,15 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- rmdir removes an empty folder only; FileSystem.remove needs recursive for any folder.
 import * as NodeFS from "node:fs";
 
 import * as ServerConfig from "../config.ts";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as EventStore from "../orchestration-v2/EventStore.ts";
+import { nativeStorageFolder } from "../orchestration-v2/NativeStorageFolder.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -62,6 +66,8 @@ export const make = Effect.gen(function* () {
   const threadLocks = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const projectLocks = yield* ProjectLock.ProjectLock;
   const eventSink = yield* EventSink.EventSinkV2;
+  const eventStore = yield* EventStore.EventStoreV2;
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -117,14 +123,16 @@ export const make = Effect.gen(function* () {
     } satisfies ThreadMoveProviderInstance;
   });
 
-  const decide = Effect.fn("ThreadMoveService.decide")(function* (request: ThreadMoveInput) {
-    const snapshot = yield* threads
-      .getShellSnapshot()
-      .pipe(Effect.mapError(fail("Could not read the threads.")));
-    const shells: ReadonlyArray<ThreadMoveShell> = [
+  const readShells = threads.getShellSnapshot().pipe(
+    Effect.map((snapshot): ReadonlyArray<ThreadMoveShell> => [
       ...snapshot.threads,
       ...snapshot.archivedThreads,
-    ];
+    ]),
+    Effect.mapError(fail("Could not read the threads.")),
+  );
+
+  const decide = Effect.fn("ThreadMoveService.decide")(function* (request: ThreadMoveInput) {
+    const shells = yield* readShells;
     const { projects: projectList } = yield* projects.snapshot.pipe(
       Effect.mapError(fail("Could not read the projects.")),
     );
@@ -132,7 +140,8 @@ export const make = Effect.gen(function* () {
       Effect.mapError(fail("Could not read the settings.")),
     );
     const instances = new Map<ProviderInstanceId, ThreadMoveProviderInstance>();
-    for (const member of collectMoveSet(request.threadId, shells)) {
+    const members = collectMoveSet(request.threadId, shells);
+    for (const member of members) {
       if (instances.has(member.providerInstanceId)) continue;
       const instance = yield* providerInstance(member.providerInstanceId);
       if (instance !== undefined) instances.set(member.providerInstanceId, instance);
@@ -155,7 +164,22 @@ export const make = Effect.gen(function* () {
       },
       probes,
     );
-    return { shells, projects: projectList, decision };
+    const relocating =
+      decision._tag !== "refused" &&
+      decision._tag !== "moved" &&
+      (yield* outbox
+        .hasUnsettled({
+          threadIds: members.map((member) => member.id),
+          effectType: "provider-session.relocate-storage",
+        })
+        .pipe(Effect.mapError(fail("Could not read the thread's pending moves."))));
+    return {
+      shells,
+      projects: projectList,
+      decision: relocating
+        ? refused("The last move is still relocating a Claude session. Try again in a moment.")
+        : decision,
+    };
   });
 
   const addProject = Effect.fn("ThreadMoveService.addProject")(
@@ -181,12 +205,27 @@ export const make = Effect.gen(function* () {
     Effect.mapError(fail("Could not add the project.")),
   );
 
-  // Under the destination project's lock and every member's lock, from the thread down.
+  const lockMembers = (
+    threadId: ThreadId,
+    locked: Array<ThreadId>,
+    body: Effect.Effect<ThreadMoveResult, ThreadMoveError>,
+  ): Effect.Effect<ThreadMoveResult, ThreadMoveError> =>
+    threadLocks.withLock(
+      threadId,
+      readShells.pipe(
+        Effect.flatMap((shells) => {
+          locked.push(threadId);
+          return collectMoveSet(threadId, shells)
+            .filter((child) => child.lineage.parentThreadId === threadId)
+            .reduceRight((inner, child) => lockMembers(child.id, locked, inner), body);
+        }),
+      ),
+    );
+
   const apply = Effect.fn("ThreadMoveService.apply")(function* (
     input: ThreadMoveInput,
     projectId: ProjectId,
     lockedIds: ReadonlyArray<ThreadId>,
-    added: Project | undefined,
   ) {
     const project = Option.getOrUndefined(
       yield* projects
@@ -198,19 +237,11 @@ export const make = Effect.gen(function* () {
       return refused(`The destination project ${quote(project.title)} is archived.`);
     }
     const { projects: projectList, decision } = yield* decide(input);
-    if (decision._tag !== "move") {
-      return decision._tag === "refused" && added !== undefined
-        ? {
-            ...decision,
-            reason: `${decision.reason} The project ${quote(added.title)} was added and stays.`,
-            projects: [...(decision.projects ?? []), { projectId: added.id, title: added.title }],
-          }
-        : decision;
-    }
+    if (decision._tag !== "move") return decision;
     const target = decision.destination;
     if (
       target._tag === "new-project" ||
-      (target._tag === "project" && target.project.id !== projectId) ||
+      target.project?.id !== projectId ||
       decision.members.some((member) => !lockedIds.includes(member.id))
     ) {
       return refused("The thread or its destination changed. Try again.");
@@ -222,7 +253,6 @@ export const make = Effect.gen(function* () {
     }
     const folderOf = (shell: ThreadMoveShell) =>
       shell.worktreePath ?? previousProject.workspaceRoot;
-    // /no claims its folder only now, after every check passed.
     const worktreePath =
       target._tag !== "scratch"
         ? null
@@ -237,16 +267,41 @@ export const make = Effect.gen(function* () {
     const commit = Effect.gen(function* () {
       const members: Array<ThreadMoveMember> = [];
       for (const member of decision.members) {
+        const unreadable = fail(`Could not read ${quote(member.title)}.`);
+        const projection = yield* threads
+          .getThreadRecords(
+            member.id,
+            ["providerSessions", "providerThreads", "runs", "attempts"],
+            { turnItemTypes: [] },
+          )
+          .pipe(Effect.mapError(unreadable));
+        const scopes = yield* Effect.cached(
+          eventStore.read({ threadId: member.id, eventType: "checkpoint-scope.created" }).pipe(
+            Stream.runCollect,
+            Effect.map((events) =>
+              Array.from(events).flatMap(({ event }) =>
+                event.type === "checkpoint-scope.created" ? [event.payload] : [],
+              ),
+            ),
+            Effect.mapError(unreadable),
+          ),
+        );
+        const storageFolders = new Map<ProviderThreadId, string>();
+        for (const providerThread of projection.providerThreads) {
+          if (providerThread.driver !== "claudeAgent") continue;
+          const history = { providerThread, runs: projection.runs, attempts: projection.attempts };
+          const folder =
+            nativeStorageFolder({ ...history, checkpointScopes: [] }) ??
+            nativeStorageFolder({ ...history, checkpointScopes: yield* scopes });
+          if (folder !== undefined) storageFolders.set(providerThread.id, folder);
+        }
         members.push({
-          projection: yield* threads
-            .getThreadRecords(member.id, ["providerSessions", "providerThreads"], {
-              turnItemTypes: [],
-            })
-            .pipe(Effect.mapError(fail(`Could not read ${quote(member.title)}.`))),
+          projection,
           previousFolder: folderOf(member),
+          storageFolders,
           nextOrdinal: yield* projections
             .getNextTurnItemOrdinal(member.id)
-            .pipe(Effect.mapError(fail(`Could not read ${quote(member.title)}.`))),
+            .pipe(Effect.mapError(unreadable)),
         });
       }
       const previousFolder = folderOf(thread);
@@ -315,25 +370,27 @@ export const make = Effect.gen(function* () {
     function* (input) {
       const first = yield* decide(input);
       if (first.decision._tag !== "move") return first.decision;
-      const { destination, members } = first.decision;
+      const { destination } = first.decision;
       const added =
         destination._tag === "new-project" ? yield* addProject(destination.folder) : undefined;
       const projectId =
-        destination._tag === "project"
-          ? destination.project.id
-          : added !== undefined
-            ? added.id
-            : (yield* managedFolders.ensureScratchProject.pipe(
-                Effect.mapError(fail("Scratch folders are unavailable on this server.")),
-              )).projectId;
-      const lockedIds = members.map((member) => member.id);
-      return yield* projectLocks.withLock(
+        (destination._tag === "new-project" ? added : destination.project)?.id ??
+        (yield* managedFolders.ensureScratchProject.pipe(
+          Effect.mapError(fail("Scratch folders are unavailable on this server.")),
+        )).projectId;
+      const locked: Array<ThreadId> = [];
+      const result = yield* projectLocks.withLock(
         projectId,
-        lockedIds.reduceRight(
-          (inner, threadId) => threadLocks.withLock(threadId, inner),
-          apply(input, projectId, lockedIds, added),
-        ),
+        lockMembers(input.threadId, locked, apply(input, projectId, locked)),
       );
+      if (added === undefined || result._tag === "moved") return result;
+      const refusal =
+        result._tag === "refused" ? result : refused("The thread changed. Try again.");
+      return {
+        ...refusal,
+        reason: `${refusal.reason} The project ${quote(added.title)} was added and stays.`,
+        projects: [...(refusal.projects ?? []), { projectId: added.id, title: added.title }],
+      };
     },
   );
 

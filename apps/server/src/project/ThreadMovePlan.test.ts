@@ -35,7 +35,7 @@ function projection(input: {
   readonly branch?: string | null;
   readonly pullRequest?: { readonly number: number; readonly url: string } | null;
   readonly sessions?: ReadonlyArray<OrchestrationV2ProviderSession["status"]>;
-  readonly claudeSession?: { readonly nativeId: string; readonly storage?: string } | null;
+  readonly claudeSession?: { readonly nativeId: string } | null;
 }): OrchestrationV2ThreadProjection {
   const threadId = ThreadId.make(input.id);
   const base = emptyProjection({
@@ -91,9 +91,6 @@ function projection(input: {
             strength: "strong",
           },
           nativeConversationHeadRef: null,
-          ...(input.claudeSession.storage === undefined
-            ? {}
-            : { nativeStorageFolder: input.claudeSession.storage }),
           status: "idle",
           firstRunOrdinal: null,
           lastRunOrdinal: null,
@@ -180,7 +177,8 @@ const member = (
   thread: OrchestrationV2ThreadProjection,
   previousFolder: string,
   nextOrdinal = 7,
-): ThreadMoveMember => ({ projection: thread, previousFolder, nextOrdinal });
+  storageFolders: ReadonlyMap<ProviderThreadId, string> = new Map(),
+): ThreadMoveMember => ({ projection: thread, previousFolder, storageFolders, nextOrdinal });
 
 it.effect.each([
   { name: "root to root", worktreePath: null, from: "/work/a", to: "/work/b", scratch: null },
@@ -314,6 +312,24 @@ it.effect("links the pull request a cleared branch tracked, once", () =>
     };
     const again = yield* plan({ members: [member(linked, "/work/a")] });
     assert.lengthOf(ofType(again.events, "thread.pull-request-synced"), 0);
+    const dismissed = {
+      ...thread,
+      thread: {
+        ...thread.thread,
+        pullRequests: after.thread.pullRequests?.map((link) => ({
+          ...link,
+          source: "stack-dismissed" as const,
+          linkedAt: "2026-08-01T00:00:00.000Z",
+        })),
+      },
+    };
+    const relinked = yield* plan({ members: [member(dismissed, "/work/a")] });
+    assert.deepEqual(
+      ofType(relinked.events, "thread.pull-request-synced").flatMap((event) =>
+        (event.payload.pullRequests ?? []).map((link) => [link.number, link.source, link.linkedAt]),
+      ),
+      [[42, "manual", "2026-08-01T00:00:00.000Z"]],
+    );
     const unbranched = projection({ id: "t", worktreePath: null, branch: null, pullRequest });
     const none = yield* plan({ members: [member(unbranched, "/work/a")] });
     assert.lengthOf(ofType(none.events, "thread.pull-request-synced"), 0);
@@ -326,7 +342,7 @@ it.effect("relocates each Claude member's native session after its detach", () =
       id: "t",
       worktreePath: null,
       sessions: ["ready"],
-      claudeSession: { nativeId: "sess-1", storage: "/work/old-storage" },
+      claudeSession: { nativeId: "sess-1" },
     });
     const side = projection({
       id: "side",
@@ -335,7 +351,16 @@ it.effect("relocates each Claude member's native session after its detach", () =
     });
     const codexOnly = projection({ id: "codex", worktreePath: null });
     const { effects } = yield* plan({
-      members: [member(thread, "/work/a"), member(side, "/work/a"), member(codexOnly, "/work/a")],
+      members: [
+        member(
+          thread,
+          "/work/a",
+          7,
+          new Map([[ProviderThreadId.make("provider-thread:t"), "/work/old-storage"]]),
+        ),
+        member(side, "/work/a"),
+        member(codexOnly, "/work/a"),
+      ],
     });
     assert.deepEqual(
       effects.map((effect) => [effect.threadId, effect.request.type]),

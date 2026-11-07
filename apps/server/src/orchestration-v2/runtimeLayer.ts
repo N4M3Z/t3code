@@ -390,7 +390,7 @@ export const layerProduction = Layer.mergeAll(
         layerThreadManagementProvided,
         layerEventSink,
         IdAllocator.layer,
-        ProjectionStore.layer,
+        layerStores,
       ),
     ),
   ),

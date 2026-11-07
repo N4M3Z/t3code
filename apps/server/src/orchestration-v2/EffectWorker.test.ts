@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
@@ -7,12 +8,14 @@ import {
   CommandId,
   NodeId,
   ProjectId,
+  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
   RunId,
   RuntimeRequestId,
+  ScheduledTaskId,
   ThreadId,
   VcsProcessExitError,
 } from "@t3tools/contracts";
@@ -24,7 +27,18 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
+import * as ServerConfig from "../config.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as PreviewManager from "../preview/Manager.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -36,6 +50,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
+import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -401,80 +416,122 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
   }),
 );
 
-it.effect("retries a scheduled-task move that fails once and settles it on the next attempt", () =>
+it.effect("moves scheduled tasks after a failed store write while the task keeps firing", () =>
   Effect.gen(function* () {
-    const now = DateTime.formatIso(yield* DateTime.now);
-    const effectId = "effect:worker-scheduled-tasks-move";
-    const workerId = "worker-scheduled-tasks-move";
-    const request = {
-      type: "scheduled-tasks.move" as const,
-      threadIds: [threadId],
-      projectId: ProjectId.make("project:worker-scheduled-tasks-move"),
-    };
-    const claims = yield* Ref.make(0);
-    const retries = yield* Ref.make<ReadonlyArray<number>>([]);
-    const settled = yield* Ref.make(0);
-    const moves = yield* Ref.make(0);
-    const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
-      claimNext: () =>
-        Ref.updateAndGet(claims, (count) => count + 1).pipe(
-          Effect.map((attemptCount) =>
-            Option.some<EffectOutbox.OrchestrationEffectV2>({
-              id: effectId,
-              commandId: CommandId.make("command:worker-scheduled-tasks-move"),
-              threadId,
-              request,
-              status: "running",
-              attemptCount,
-              availableAt: now,
-              leaseOwner: workerId,
-              createdAt: now,
-              updatedAt: now,
-              completedAt: null,
-              lastError: null,
-            }),
-          ),
-        ),
-      awaitCancellation: () => Effect.never,
-      get: () => Effect.succeedNone,
-      clearCancellation: () => Effect.void,
-      retry: (input) =>
-        Ref.update(retries, (existing) => [...existing, input.delayMs]).pipe(Effect.as(true)),
-      succeed: () => Ref.update(settled, (count) => count + 1).pipe(Effect.as(true)),
-    });
-    const layerCleanup = Layer.succeed(ResourceCleanupService.ResourceCleanupService, {
-      cleanupScheduledTasks: () => Effect.void,
-      cleanupTerminals: () => Effect.void,
-      cleanupPreviews: () => Effect.void,
-      cleanupAttachments: () => Effect.void,
-      moveScheduledTasks: (input) =>
-        Ref.updateAndGet(moves, (count) => count + 1).pipe(
-          Effect.flatMap((count) =>
-            count === 1
-              ? new ResourceCleanupService.ResourceCleanupError({
-                  operation: "scheduled-tasks",
-                  cause: `store unavailable for ${input.threadIds.length} thread(s)`,
-                })
-              : Effect.void,
-          ),
-        ),
-    });
-    const events = yield* Ref.make<ReadonlyArray<string>>([]);
-    const layerWorker = EffectWorker.layerWithOptions({ workerId }).pipe(
+    const sql = yield* SqlClient.SqlClient;
+    const from = ProjectId.make("project:task-move-from");
+    const to = ProjectId.make("project:task-move-to");
+    const sends = yield* Ref.make<ReadonlyArray<ProjectId>>([]);
+    // The thread already works in `to`; a send to any other project finds no thread there.
+    const layerTasks = ScheduledTaskService.layer.pipe(
       Layer.provide(
-        Layer.merge(layerOutbox, layerExecutorFor({ events }).pipe(Layer.provide(layerCleanup))),
+        Layer.mergeAll(
+          ManagedPolicy.layerTest(),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            sendToThread: (input) =>
+              Ref.update(sends, (all) => [...all, input.projectId]).pipe(
+                Effect.andThen(
+                  input.projectId === to
+                    ? Effect.succeed({} as never)
+                    : Effect.fail(
+                        new ThreadManagementService.ThreadManagementThreadNotFoundError({
+                          projectId: input.projectId,
+                          threadId: input.threadId,
+                        }),
+                      ),
+                ),
+              ),
+            getThreadShell: () => Effect.succeed({ projectId: to } as never),
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+          NodeCrypto.layer,
+          Scheduler.layer,
+        ),
       ),
     );
-
-    yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce.pipe(Effect.andThen(worker.runOnce))),
-      Effect.provide(layerWorker),
+    const layerCleanup = ResourceCleanupService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(PreviewManager.PreviewManager)({}),
+          Layer.mock(TerminalManager.TerminalManager)({}),
+          ServerConfig.layerTest(process.cwd(), { prefix: "effect-worker-task-move-" }),
+        ),
+      ),
+      Layer.provide(NodeServices.layer),
+    );
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = EffectWorker.layerWithOptions({ workerId: "task-move", maxAttempts: 2 }).pipe(
+      Layer.provide(layerExecutorFor({ events }).pipe(Layer.provide(layerCleanup))),
+      Layer.provideMerge(EffectOutbox.layer),
+      Layer.provideMerge(layerTasks),
     );
 
-    assert.equal(yield* Ref.get(moves), 2);
-    assert.deepEqual(yield* Ref.get(retries), [100]);
-    assert.equal(yield* Ref.get(settled), 1);
-  }),
+    yield* Effect.gen(function* () {
+      const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const { task } = yield* tasks.upsert({
+        id: ScheduledTaskId.make("task:move"),
+        title: "Check in",
+        prompt: "Check progress",
+        enabled: true,
+        schedule: { type: "interval", everyMs: 60_000 },
+        projectId: from,
+        threadId,
+        workspaceStrategy: { type: "root" },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+      const listedUnder = sql<{ readonly project_id: string }>`
+        SELECT project_id FROM scheduled_tasks WHERE task_id = ${task.id}
+      `.pipe(Effect.map((rows) => rows[0]?.project_id));
+      const statusOf = (effectId: string) =>
+        outbox.get(effectId).pipe(Effect.map((effect) => Option.getOrUndefined(effect)?.status));
+      const enqueueMove = (effectId: string) =>
+        outbox.enqueue([
+          {
+            id: effectId,
+            commandId: CommandId.make(`command:${effectId}`),
+            threadId,
+            request: { type: "scheduled-tasks.move", threadIds: [threadId], projectId: to },
+          },
+        ]);
+      const failStore = sql`
+        CREATE TRIGGER fail_task_move BEFORE UPDATE OF project_id ON scheduled_tasks
+        BEGIN SELECT RAISE(ABORT, 'task store unavailable'); END
+      `;
+
+      yield* failStore;
+      yield* enqueueMove("effect:task-move:retried");
+      assert.isTrue(yield* worker.runOnce);
+      assert.equal(yield* statusOf("effect:task-move:retried"), "pending");
+      assert.equal(yield* listedUnder, from);
+      yield* tasks.runNow({ id: task.id });
+      assert.deepEqual(yield* Ref.get(sends), [from, to]);
+      yield* sql`DROP TRIGGER fail_task_move`;
+      yield* TestClock.adjust("100 millis");
+      assert.isTrue(yield* worker.runOnce);
+      assert.equal(yield* statusOf("effect:task-move:retried"), "succeeded");
+      assert.equal(yield* listedUnder, to);
+
+      yield* sql`UPDATE scheduled_tasks SET project_id = ${from} WHERE task_id = ${task.id}`;
+      yield* failStore;
+      yield* enqueueMove("effect:task-move:exhausted");
+      assert.isTrue(yield* worker.runOnce);
+      yield* TestClock.adjust("100 millis");
+      assert.isTrue(yield* worker.runOnce);
+      assert.equal(yield* statusOf("effect:task-move:exhausted"), "failed");
+      assert.equal(yield* listedUnder, from);
+      yield* tasks.runNow({ id: task.id });
+      assert.deepEqual(yield* Ref.get(sends), [from, to, from, to]);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect("arms cancellation before the durable pre-execution check", () =>

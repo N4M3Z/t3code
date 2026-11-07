@@ -2,12 +2,18 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointScopeId,
   CommandId,
   EventId,
+  MessageId,
+  NodeId,
   type OrchestrationV2AppThread,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderThreadId,
+  RunAttemptId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -28,6 +34,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
@@ -134,6 +141,7 @@ const layerTest = Layer.effect(ThreadMoveService.ThreadMoveService, ThreadMoveSe
   Layer.provideMerge(
     Layer.mergeAll(
       LegacyV1ThreadImporter.layer.pipe(Layer.provideMerge(layerEventPersistence)),
+      EffectOutbox.layer,
       ProjectStore.layer,
       IdAllocator.layer,
       ThreadCommandExecutor.layer,
@@ -272,7 +280,7 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
   it.effect("a refused move commits nothing", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { at, a, b, thread, shellOf } = yield* setup("refused");
+        const { at, a, thread, shellOf } = yield* setup("refused");
         const service = yield* ThreadMoveService.ThreadMoveService;
         const probe = yield* Probe;
         const threadId = yield* thread("t", a.id, null);
@@ -287,7 +295,6 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         }
         assert.equal((yield* shellOf(threadId)).projectId, a.id);
         assert.deepEqual(yield* outboxOf(threadId), []);
-        assert.equal(b.deletedAt, null);
         yield* Ref.set(probe, () => Effect.succeed(false));
       }),
     ),
@@ -397,6 +404,33 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         }
         assert.equal((yield* shellOf(threadId)).projectId, a.id);
         yield* Ref.set(probe, () => Effect.succeed(false));
+
+        // The thread enters a worktree after the project is added, so the re-check would ask.
+        const eventSink = yield* EventSink.EventSinkV2;
+        const projectLocks = yield* ProjectLock.ProjectLock;
+        yield* (yield* FileSystem.FileSystem).makeDirectory(at("other"));
+        const entersWorktree = {
+          ...threadCreated({ threadId, projectId: a.id, worktreePath: at("w") }),
+          id: EventId.make("recheck:enters-worktree"),
+          type: "thread.metadata-updated" as const,
+        };
+        const racing = yield* ThreadMoveService.make.pipe(
+          Effect.provideService(ProjectLock.ProjectLock, {
+            ...projectLocks,
+            withLock: (key, effect) =>
+              eventSink
+                .write({ events: [entersWorktree] })
+                .pipe(Effect.orDie, Effect.andThen(projectLocks.withLock(key, effect))),
+          }),
+        );
+        const asked = yield* racing.move({ threadId, destination: at("other"), addProject: true });
+        const other = Option.getOrUndefined(yield* projects.getByWorkspaceRoot(at("other")));
+        assert.deepEqual(asked, {
+          _tag: "refused",
+          reason: `The thread changed. Try again. The project "other" was added and stays.`,
+          projects: [{ projectId: other!.id, title: "other" }],
+        });
+        assert.equal((yield* shellOf(threadId)).projectId, a.id);
       }),
     ),
   );
@@ -445,7 +479,6 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
             }),
           );
           const releaser = yield* Deferred.await(moveAtLock).pipe(
-            Effect.andThen(Effect.yieldNow),
             Effect.andThen(Deferred.succeed(releaseDelete, undefined)),
             Effect.forkChild({ startImmediately: true }),
           );
@@ -488,26 +521,37 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
   it.effect("deletion holds the project lock from its thread read through its commit", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { a, b, thread } = yield* setup("lock");
-        const projects = yield* ProjectService.ProjectService;
+        const { b, thread } = yield* setup("lock");
         const projectLocks = yield* ProjectLock.ProjectLock;
+        const deletionAtLock = yield* Deferred.make<void>();
+        const projects = yield* ProjectService.make.pipe(
+          Effect.provideService(ProjectLock.ProjectLock, {
+            ...projectLocks,
+            withLock: (key, effect) =>
+              Deferred.succeed(deletionAtLock, undefined).pipe(
+                Effect.andThen(projectLocks.withLock(key, effect)),
+              ),
+          }),
+        );
+        const held = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
         const holder = yield* projectLocks
-          .withLock(b.id, Deferred.await(release))
+          .withLock(
+            b.id,
+            Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          )
           .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
+        yield* Deferred.await(held);
         const deletion = yield* projects
           .delete({ commandId: CommandId.make("lock:delete-b"), projectId: b.id })
           .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
-        assert.isUndefined(deletion.pollUnsafe());
+        yield* Deferred.await(deletionAtLock);
         // A thread that arrives while the lock is held is what the deletion's read must see.
         yield* thread("late", b.id, null);
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(holder);
         assert.equal((yield* Fiber.join(deletion).pipe(Effect.flip))._tag, "ProjectNotEmptyError");
         assert.isTrue(Option.isSome(yield* projects.getById(b.id)));
-        assert.isTrue(Option.isSome(yield* projects.getById(a.id)));
       }),
     ),
   );
@@ -589,18 +633,6 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         const projectLocks = yield* ProjectLock.ProjectLock;
         const order = yield* Ref.make<ReadonlyArray<string>>([]);
         const record = (key: string) => Ref.update(order, (keys) => [...keys, key]);
-        const service = yield* ThreadMoveService.make.pipe(
-          Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, {
-            ...threadLocks,
-            withLock: (key, effect) =>
-              record(key).pipe(Effect.andThen(threadLocks.withLock(key, effect))),
-          }),
-          Effect.provideService(ProjectLock.ProjectLock, {
-            ...projectLocks,
-            withLock: (key, effect) =>
-              record(`project:${key}`).pipe(Effect.andThen(projectLocks.withLock(key, effect))),
-          }),
-        );
         const threadId = yield* thread("t", a.id, null);
         const sideId = yield* thread("side", a.id, null, {
           parent: threadId,
@@ -615,15 +647,197 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
           parent: threadId,
           relationship: "fork",
         });
+        const lateSide = thread("late", a.id, null, {
+          parent: threadId,
+          relationship: "fork",
+          sideChat: true,
+        });
+        const lateId = ThreadId.make("order:late");
+        const service = yield* ThreadMoveService.make.pipe(
+          Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, {
+            ...threadLocks,
+            withLock: (key, effect) =>
+              record(key).pipe(Effect.andThen(threadLocks.withLock(key, effect))),
+          }),
+          Effect.provideService(ProjectLock.ProjectLock, {
+            ...projectLocks,
+            withLock: (key, effect) =>
+              record(`project:${key}`).pipe(
+                Effect.andThen(lateSide),
+                Effect.andThen(projectLocks.withLock(key, effect)),
+              ),
+          }),
+        );
 
         const result = yield* service.move({ threadId, destination: at("b") });
 
         assert.equal(result._tag, "moved");
-        assert.deepEqual(yield* Ref.get(order), [`project:${b.id}`, threadId, sideId, subId]);
-        for (const id of [threadId, sideId, subId]) {
+        assert.deepEqual(yield* Ref.get(order), [
+          `project:${b.id}`,
+          threadId,
+          lateId,
+          sideId,
+          subId,
+        ]);
+        for (const id of [threadId, sideId, subId, lateId]) {
           assert.equal((yield* shellOf(id)).projectId, b.id);
         }
         assert.equal((yield* shellOf(forkId)).projectId, a.id);
+      }),
+    ),
+  );
+
+  it.effect("relocates each Claude row from where its session is stored, one move at a time", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { at, a, b, thread, shellOf } = yield* setup("storage");
+        const service = yield* ThreadMoveService.ThreadMoveService;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = yield* thread("t", a.id, null);
+        const driver = ProviderDriverKind.make("claudeAgent");
+        const providerInstanceId = ProviderInstanceId.make("claudeAgent");
+        const base = { threadId, providerInstanceId, occurredAt: createdAt };
+        const providerThreadId = (name: string) => ProviderThreadId.make(`storage:${name}`);
+        const row = (name: string, nativeId: string, nativeStorageFolder?: string) => ({
+          ...base,
+          id: EventId.make(`storage:row:${name}:${nativeStorageFolder ?? "unknown"}`),
+          type: "provider-thread.updated" as const,
+          driver,
+          payload: {
+            id: providerThreadId(name),
+            driver,
+            providerInstanceId,
+            providerSessionId: null,
+            appThreadId: threadId,
+            ownerNodeId: null,
+            nativeThreadRef: { driver, nativeId, strength: "strong" as const },
+            nativeConversationHeadRef: null,
+            ...(nativeStorageFolder === undefined ? {} : { nativeStorageFolder }),
+            status: "idle" as const,
+            firstRunOrdinal: null,
+            lastRunOrdinal: null,
+            handoffIds: [],
+            forkedFrom: null,
+            pendingBackgroundTasks: [],
+            contextUsage: null,
+            nativeMetadata: null,
+            goal: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
+        const run = (ordinal: number, name: string, cwd?: string) => ({
+          ...base,
+          id: EventId.make(`storage:run:${ordinal}`),
+          type: "run.created" as const,
+          payload: {
+            id: RunId.make(`storage:run:${ordinal}`),
+            threadId,
+            ordinal,
+            providerInstanceId,
+            modelSelection: { instanceId: providerInstanceId, model: "claude-opus-5-5" },
+            providerThreadId: providerThreadId(name),
+            userMessageId: MessageId.make(`storage:message:${ordinal}`),
+            rootNodeId: null,
+            activeAttemptId: null,
+            status: "completed" as const,
+            requestedAt: createdAt,
+            startedAt: createdAt,
+            completedAt: createdAt,
+            checkpointId: null,
+            contextHandoffId: null,
+            ...(cwd === undefined ? {} : { cwd }),
+          },
+        });
+        const attempt = (ordinal: number, name: string, nativeThreadId?: string) => ({
+          ...base,
+          id: EventId.make(`storage:attempt:${ordinal}`),
+          type: "run-attempt.created" as const,
+          payload: {
+            id: RunAttemptId.make(`storage:attempt:${ordinal}`),
+            ...(nativeThreadId === undefined ? {} : { nativeThreadId }),
+            runId: RunId.make(`storage:run:${ordinal}`),
+            attemptOrdinal: 1,
+            rootNodeId: NodeId.make(`storage:node:${ordinal}`),
+            providerInstanceId,
+            providerThreadId: providerThreadId(name),
+            providerTurnId: null,
+            reason: "initial" as const,
+            status: "completed" as const,
+            startedAt: createdAt,
+            completedAt: createdAt,
+          },
+        });
+        // "resumed" holds a session first run on another row; "legacy" predates run.cwd.
+        yield* eventSink.write({
+          events: [
+            row("resumed", "session-resumed"),
+            row("legacy", "session-legacy"),
+            run(1, "old-instance", "/old/storage"),
+            attempt(1, "old-instance", "session-resumed"),
+            run(2, "legacy"),
+            attempt(2, "legacy"),
+            {
+              ...base,
+              id: EventId.make("storage:scope"),
+              type: "checkpoint-scope.created",
+              payload: {
+                id: CheckpointScopeId.make("storage:scope"),
+                threadId,
+                runId: RunId.make("storage:run:2"),
+                nodeId: NodeId.make("storage:node:2"),
+                parentScopeId: null,
+                providerThreadId: providerThreadId("legacy"),
+                kind: "root_run",
+                ordinalWithinParent: 0,
+                advancesAppRunCount: true,
+                cwd: "/legacy/storage",
+                createdAt,
+              },
+            },
+          ],
+        });
+        const pendingRelocations = sql<{ readonly payload_json: string }>`
+          SELECT payload_json FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${threadId} AND status = 'pending'
+            AND effect_type = 'provider-session.relocate-storage'
+          ORDER BY effect_id ASC
+        `.pipe(
+          Effect.map((rows) =>
+            rows.map(({ payload_json }) => {
+              const request = JSON.parse(payload_json);
+              return [request.providerThreadId, request.oldFolder, request.newFolder];
+            }),
+          ),
+        );
+
+        assert.equal((yield* service.move({ threadId, destination: at("b") }))._tag, "moved");
+        assert.deepEqual(yield* pendingRelocations, [
+          ["storage:legacy", "/legacy/storage", at("b")],
+          ["storage:resumed", "/old/storage", at("b")],
+        ]);
+
+        assert.deepEqual(yield* service.move({ threadId, destination: at("a") }), {
+          _tag: "refused",
+          reason: "The last move is still relocating a Claude session. Try again in a moment.",
+        });
+        assert.equal((yield* shellOf(threadId)).projectId, b.id);
+        assert.lengthOf(yield* pendingRelocations, 2);
+
+        // What the relocation handler leaves behind when it succeeds.
+        yield* eventSink.write({
+          events: [
+            row("resumed", "session-resumed", at("b")),
+            row("legacy", "session-legacy", at("b")),
+          ],
+        });
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'succeeded' WHERE thread_id = ${threadId}`;
+        assert.equal((yield* service.move({ threadId, destination: at("a") }))._tag, "moved");
+        assert.deepEqual(yield* pendingRelocations, [
+          ["storage:legacy", at("b"), at("a")],
+          ["storage:resumed", at("b"), at("a")],
+        ]);
       }),
     ),
   );

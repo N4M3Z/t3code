@@ -2,6 +2,7 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadProjectMoveCommand,
   type OrchestrationV2ThreadProjection,
+  type ProviderThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
 import type * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -27,6 +28,7 @@ export interface ThreadMoveMember {
     "thread" | "providerSessions" | "providerThreads"
   >;
   readonly previousFolder: string;
+  readonly storageFolders: ReadonlyMap<ProviderThreadId, string>;
   readonly nextOrdinal: number;
 }
 
@@ -80,10 +82,12 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
     const tracked = thread.branch === null ? null : (thread.branchPullRequest ?? null);
     const key = tracked === null ? null : legacyThreadPullRequestKey(tracked);
     const links = threadPullRequestsOf(moved);
+    const existing =
+      key === null ? undefined : links.find((link) => threadPullRequestKeysEqual(link, key));
     if (
       tracked !== null &&
       key !== null &&
-      !links.some((link) => threadPullRequestKeysEqual(link, key))
+      (existing === undefined || existing.source === "stack-dismissed")
     ) {
       yield* emit({
         type: "thread.pull-request-synced",
@@ -93,15 +97,17 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
         payload: {
           ...moved,
           pullRequests: [
-            ...links,
-            {
-              ...key,
-              url: tracked.url,
-              source: "manual",
-              linkedAt: DateTime.formatIso(now),
-              snapshot: null,
-              stack: null,
-            },
+            ...links.filter((link) => link !== existing),
+            existing === undefined
+              ? {
+                  ...key,
+                  url: tracked.url,
+                  source: "manual",
+                  linkedAt: DateTime.formatIso(now),
+                  snapshot: null,
+                  stack: null,
+                }
+              : { ...existing, source: "manual" },
           ],
         },
       });
@@ -141,7 +147,7 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
             providerInstanceId: providerThread.providerInstanceId,
             providerThreadId: providerThread.id,
             nativeSessionId,
-            oldFolder: providerThread.nativeStorageFolder ?? member.previousFolder,
+            oldFolder: member.storageFolders.get(providerThread.id) ?? member.previousFolder,
             newFolder: input.folder,
           },
         });

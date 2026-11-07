@@ -6,6 +6,7 @@ import { threadContextReference } from "../../lib/composerContextRecords";
 import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 import {
   approvalRedirectNotice,
+  folderMoveBlockReason,
   loadBalancingSendWarning,
   multipleModelSendBlock,
   referencedThreadContexts,
@@ -122,5 +123,25 @@ describe("approvalRedirectNotice", () => {
   it("stays quiet when the decline failed or the user left the thread", () => {
     expect(approvalRedirectNotice({ ...settled, declined: false })).toBeNull();
     expect(approvalRedirectNotice(settled)).toBeNull();
+  });
+});
+
+describe("folderMoveBlockReason", () => {
+  const ready = {
+    supported: true,
+    isLocalDraftThread: false,
+    requestPending: false,
+    textOnly: true,
+  };
+
+  it("lets a text-only command on a supporting server reach the server", () => {
+    expect(folderMoveBlockReason(ready)).toBeNull();
+  });
+
+  it("refuses locally on an older server, in a local draft, over a pending request, and with context", () => {
+    expect(folderMoveBlockReason({ ...ready, supported: false })).toMatch(/server/);
+    expect(folderMoveBlockReason({ ...ready, isLocalDraftThread: true })).toMatch(/project picker/);
+    expect(folderMoveBlockReason({ ...ready, requestPending: true })).toMatch(/pending/);
+    expect(folderMoveBlockReason({ ...ready, textOnly: false })).toMatch(/attachments/);
   });
 });

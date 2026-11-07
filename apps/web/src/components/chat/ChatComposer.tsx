@@ -389,6 +389,7 @@ export interface ChatComposerProps {
   onUsageLimitsCommand?: (() => void) | undefined;
   sideChatAvailable?: boolean;
   sideChatDisabledReason?: string | null;
+  folderMoveAvailable?: boolean;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   onFreshSession?: (() => void) | undefined;
   environmentUnavailable: {
@@ -1162,6 +1163,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     planModeUiEnabled,
     sideChatAvailable: props.sideChatAvailable === true,
     sideChatDisabledReason: props.sideChatDisabledReason ?? null,
+    folderMoveAvailable: props.folderMoveAvailable === true,
     freshSessionAvailable: props.onFreshSession !== undefined,
     compactSlashCommandAvailable,
     selectedProvider,
@@ -1950,8 +1952,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         return;
       }
-      if (item.command === "side" || item.command === "btw") {
-        if (props.sideChatDisabledReason) return;
+      if (
+        item.command === "side" ||
+        item.command === "btw" ||
+        item.command === "cd" ||
+        item.command === "no"
+      ) {
+        if (item.command !== "cd" && item.command !== "no" && props.sideChatDisabledReason) return;
         const applied = applyPromptReplacement(
           trigger.rangeStart,
           trigger.rangeEnd,

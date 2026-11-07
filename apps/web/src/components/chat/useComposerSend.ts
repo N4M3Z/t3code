@@ -56,8 +56,12 @@ import {
 import {
   type ComposerSubmissionIntent,
   collapseExpandedComposerCursor,
+  parseFolderMoveCommand,
   parseStandaloneComposerSlashCommand,
 } from "../../composer-logic";
+import { requestConfirmDialog } from "../../confirmDialog";
+import { runThreadMove, threadMoveQuestionText } from "@t3tools/client-runtime/thread-move";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { resolvePlanFollowUpSubmission } from "../../proposedPlan";
 import { type ChatMessage } from "../../types";
 import { recordPromptSent } from "../GitHubStarPrompt";
@@ -94,6 +98,7 @@ import { useClientSettingsHydrated, useEnvironmentSettings } from "../../hooks/u
 import { environmentPresentations } from "../../state/presentation";
 import {
   approvalRedirectNotice,
+  folderMoveBlockReason,
   loadBalancingSendWarning,
   multipleModelSendBlock,
   referencedThreadContexts,
@@ -350,6 +355,7 @@ export function useComposerSend(input: ComposerSendInput) {
   const uploadThreadFeedback = useOrchestrationCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
+  const moveThread = useAtomCommand(threadEnvironment.move, { reportFailure: false });
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
@@ -487,6 +493,82 @@ export function useComposerSend(input: ComposerSendInput) {
       return;
     }
     const sendCtx = composerRef.current?.getSendContext();
+    // `/cd` and `/no` never reach the provider, also while a queued message is being edited.
+    const folderMove = parseFolderMoveCommand(promptAtSend);
+    if (sendCtx && folderMove) {
+      const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
+      const blockReason = folderMoveBlockReason({
+        supported: config?.environment.capabilities.threadWorkingFolderMove === true,
+        isLocalDraftThread,
+        requestPending: activePendingProgress !== null || pendingApprovalsRef.current.length > 0,
+        textOnly:
+          !directAnnotation &&
+          sendCtx.images.length === 0 &&
+          sendCtx.files.length === 0 &&
+          filterTerminalContextsWithText(sendCtx.terminalContexts).length === 0 &&
+          sendCtx.previewAnnotations.length === 0 &&
+          sendCtx.reviewComments.length === 0 &&
+          sendCtx.threadContexts.length === 0 &&
+          sendCtx.environmentContexts.length === 0,
+      });
+      const refuse = (description: string) =>
+        toastManager.add(
+          stackedThreadToast({ type: "warning", title: "Thread not moved", description }),
+        );
+      if (blockReason !== null) {
+        refuse(blockReason);
+        return;
+      }
+      if (folderMove.command === "cd" && folderMove.path === null) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "info",
+            title: `Working in ${activeThread.worktreePath ?? activeProject?.workspaceRoot ?? "an unknown folder"}`,
+            description: "Usage: /cd <path>",
+          }),
+        );
+        return;
+      }
+      if (folderMove.command === "no" && folderMove.argument !== "") {
+        refuse("Usage: /no, with nothing after it.");
+        return;
+      }
+      const outcome = await runThreadMove(
+        {
+          threadId: activeThread.id,
+          destination: folderMove.command === "cd" ? folderMove.path : null,
+        },
+        async (request) => {
+          const result = await moveThread({ environmentId, input: request });
+          if (result._tag === "Success") return result.value;
+          const error = squashAtomCommandFailure(result);
+          return {
+            _tag: "refused",
+            reason: error instanceof Error ? error.message : "Could not move the thread.",
+          };
+        },
+        async (question) => (await requestConfirmDialog(threadMoveQuestionText(question))) ?? false,
+      );
+      if (outcome === null) return;
+      if (outcome._tag === "refused") {
+        refuse(outcome.reason);
+        return;
+      }
+      if (outcome.members.length === 0) {
+        toastManager.add(
+          stackedThreadToast({ type: "info", title: `Already in ${outcome.folder}.` }),
+        );
+      }
+      if (
+        currentRouteThreadKeyRef.current === routeThreadKey &&
+        promptRef.current === promptAtSend
+      ) {
+        promptRef.current = "";
+        setComposerDraftPrompt(composerDraftTarget, "");
+        composerRef.current?.resetCursorState();
+      }
+      return;
+    }
     // `/side` beats an open question and a plan follow-up, which would send the text to main.
     const sideChatCommand =
       sendCtx && !directAnnotation && !queuedRunEdit.isEditing

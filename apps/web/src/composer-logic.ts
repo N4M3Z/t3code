@@ -18,7 +18,15 @@ import {
 import { resolveShortcutCommand, type ShortcutEventLike } from "./keybindings";
 
 export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default" | "side" | "btw" | "clear";
+export type ComposerSlashCommand =
+  | "model"
+  | "plan"
+  | "default"
+  | "side"
+  | "btw"
+  | "clear"
+  | "cd"
+  | "no";
 export type ComposerSubmissionIntent = "foreground" | "background" | "alternate";
 
 export interface ComposerTrigger {
@@ -320,7 +328,7 @@ export function composerStateAtPromptEnd(
 
 export function parseStandaloneComposerSlashCommand(
   text: string,
-): Exclude<ComposerSlashCommand, "model" | "side" | "btw" | "clear"> | null {
+): Exclude<ComposerSlashCommand, "model" | "side" | "btw" | "clear" | "cd" | "no"> | null {
   const match = /^\/(plan|default)\s*$/i.exec(text.trim());
   if (!match) {
     return null;
@@ -328,6 +336,20 @@ export function parseStandaloneComposerSlashCommand(
   const command = match[1]?.toLowerCase();
   if (command === "plan") return "plan";
   return "default";
+}
+
+type FolderMoveCommand =
+  | { readonly command: "cd"; readonly path: string | null }
+  | { readonly command: "no"; readonly argument: string };
+
+/** The path after `/cd` keeps its spaces once one pair of surrounding quotes is stripped. */
+export function parseFolderMoveCommand(text: string): FolderMoveCommand | null {
+  const match = /^\/(cd|no)(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  if (!match) return null;
+  const argument = match[2]?.trim() ?? "";
+  if (match[1]?.toLowerCase() === "no") return { command: "no", argument };
+  const path = /^(["'])([\s\S]*)\1$/.exec(argument)?.[2] ?? argument;
+  return { command: "cd", path: path || null };
 }
 
 /**

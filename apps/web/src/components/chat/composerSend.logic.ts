@@ -79,3 +79,17 @@ export function approvalRedirectNotice(input: {
   }
   return null;
 }
+
+/** Why a typed `/cd` or `/no` stops in the composer, or null to ask the server. */
+export function folderMoveBlockReason(input: {
+  readonly supported: boolean;
+  readonly isLocalDraftThread: boolean;
+  readonly requestPending: boolean;
+  readonly textOnly: boolean;
+}): string | null {
+  if (!input.supported) return "Update this environment's T3 Code server to move threads.";
+  if (input.isLocalDraftThread) return "Pick the folder in this draft's project picker instead.";
+  if (input.requestPending) return "Answer the pending question or approval first.";
+  if (!input.textOnly) return "Remove the attachments and context, then send it again.";
+  return null;
+}

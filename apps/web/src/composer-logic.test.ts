@@ -22,6 +22,7 @@ import {
   extendReplacementRangeForTrailingSpace,
   formatAssistantCitationForComposer,
   isPathSuggestionCurrent,
+  parseFolderMoveCommand,
   replaceTextRange,
 } from "./composer-logic";
 import { slashCommandItemsForPromptPosition } from "./components/chat/composerSlashCommandSearch";
@@ -552,7 +553,7 @@ describe("extendReplacementRangeForTrailingSpace", () => {
 
 describe("side chat slash commands", () => {
   it("are not offered after the start of a message", () => {
-    const items = (["side", "btw", "clear", "plan"] as const).map((command) => ({
+    const items = (["side", "btw", "clear", "cd", "no", "plan"] as const).map((command) => ({
       id: `slash:${command}`,
       type: "slash-command" as const,
       command,
@@ -562,5 +563,25 @@ describe("side chat slash commands", () => {
     expect(slashCommandItemsForPromptPosition(items, false).map((item) => item.id)).toEqual([
       "slash:plan",
     ]);
+  });
+});
+
+describe("parseFolderMoveCommand", () => {
+  it.each([
+    ["/cd", { command: "cd", path: null }],
+    ["/cd   ", { command: "cd", path: null }],
+    ['/cd ""', { command: "cd", path: null }],
+    ["/CD ~/src/app ", { command: "cd", path: "~/src/app" }],
+    ["/cd My Projects/app", { command: "cd", path: "My Projects/app" }],
+    ['/cd "My Projects/app"', { command: "cd", path: "My Projects/app" }],
+    ["/cd ' a b '", { command: "cd", path: " a b " }],
+    ['/cd "a', { command: "cd", path: '"a' }],
+    ["/no", { command: "no", argument: "" }],
+    ["/no project", { command: "no", argument: "project" }],
+    ["/cdx", null],
+    ["/node", null],
+    ["run /cd later", null],
+  ])("parses %j", (text, expected) => {
+    expect(parseFolderMoveCommand(text)).toEqual(expected);
   });
 });

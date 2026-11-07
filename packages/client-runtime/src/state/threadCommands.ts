@@ -373,6 +373,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    move: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:move",
+      tag: WS_METHODS.threadsMove,
+      scheduler,
+      concurrency,
+    }),
   };
   const optimistic = createOptimisticThreadLifecycle(snapshotAtom);
   return {

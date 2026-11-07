@@ -66,6 +66,7 @@ export function useComposerMenuItems({
   planModeUiEnabled,
   sideChatAvailable,
   sideChatDisabledReason,
+  folderMoveAvailable,
   freshSessionAvailable,
   compactSlashCommandAvailable,
   selectedProvider,
@@ -86,6 +87,7 @@ export function useComposerMenuItems({
   readonly planModeUiEnabled: boolean;
   readonly sideChatAvailable: boolean;
   readonly sideChatDisabledReason: string | null;
+  readonly folderMoveAvailable: boolean;
   readonly freshSessionAvailable: boolean;
   readonly compactSlashCommandAvailable: boolean;
   readonly selectedProvider: ProviderDriverKind;
@@ -262,6 +264,24 @@ export function useComposerMenuItems({
               },
             ] as const)
           : []),
+        ...(folderMoveAvailable
+          ? ([
+              {
+                id: "slash:cd",
+                type: "slash-command",
+                command: "cd",
+                label: "/cd",
+                description: "Move this thread to another folder",
+              },
+              {
+                id: "slash:no",
+                type: "slash-command",
+                command: "no",
+                label: "/no",
+                description: "Move this thread out of its project",
+              },
+            ] as const)
+          : []),
         ...(freshSessionAvailable
           ? ([
               {
@@ -301,11 +321,13 @@ export function useComposerMenuItems({
           skill.description ??
           (skill.scope ? `${skill.scope} skill` : ""),
       }));
-      // T3's `/clear` replaces the provider's, which would clear a session T3 still treats as live.
+      // T3's `/clear` and `/cd` replace the provider's; its `/clear` would clear a session T3
+      // still treats as live, and its `cd` never runs because T3 intercepts `/cd` first.
       const visibleProviderSlashCommandItems = providerSlashCommandItems.filter(
         (item) =>
           (item.command.name !== "compact" || compactSlashCommandAvailable) &&
-          (item.command.name !== "clear" || !freshSessionAvailable),
+          (item.command.name !== "clear" || !freshSessionAvailable) &&
+          item.command.name !== "cd",
       );
       const slashCommandItems = slashCommandItemsForPromptPosition(
         [...builtInSlashCommandItems, ...visibleProviderSlashCommandItems, ...skillItems],

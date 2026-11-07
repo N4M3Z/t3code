@@ -3680,6 +3680,10 @@ export default function ChatView(props: ChatViewProps) {
                                 onToggleKeepFullHistory={toggleKeepFullHistoryStable}
                                 sideChatAvailable={sideChat.available}
                                 sideChatDisabledReason={sideChatDisabledReason}
+                                folderMoveAvailable={
+                                  serverConfig?.environment.capabilities.threadWorkingFolderMove ===
+                                  true
+                                }
                                 onFreshSession={
                                   freshSessionCommandAvailable ? armFreshSessionStable : undefined
                                 }

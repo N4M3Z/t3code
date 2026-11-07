@@ -6920,14 +6920,19 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
       const projectId = ProjectId.make("project:projection-fork-receipt");
-      const sourceThreadId = ThreadId.make("thread:projection-fork-receipt:source");
-      const targetThreadId = ThreadId.make("thread:projection-fork-receipt:target");
-      const legacyRunId = RunId.make("run:projection-fork-receipt:legacy");
-      const movedRunId = RunId.make("run:projection-fork-receipt:moved");
+      const thread = (name: string) => ThreadId.make(`thread:projection-fork-receipt:${name}`);
+      const run = (name: string) => RunId.make(`run:projection-fork-receipt:${name}`);
+      const sourceThreadId = thread("source");
+      const targetThreadId = thread("target");
+      const legacyRunId = run("legacy");
+      const movedRunId = run("moved");
 
       for (const [threadId, forkedFrom] of [
         [sourceThreadId, null],
         [targetThreadId, { type: "run", threadId: sourceThreadId, runId: movedRunId }],
+        [thread("legacy-fork"), { type: "run", threadId: sourceThreadId, runId: legacyRunId }],
+        [thread("late"), null],
+        [thread("late-fork"), { type: "run", threadId: thread("late"), runId: run("late-moved") }],
       ] as const) {
         yield* projectionStore.apply({
           id: EventId.make(`event:projection-fork-receipt:created:${threadId}`),
@@ -6948,9 +6953,9 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             worktreePath: null,
             activeProviderThreadId: null,
             lineage: {
-              parentThreadId: forkedFrom === null ? null : sourceThreadId,
+              parentThreadId: forkedFrom?.threadId ?? null,
               relationshipToParent: forkedFrom === null ? null : "fork",
-              rootThreadId: sourceThreadId,
+              rootThreadId: forkedFrom?.threadId ?? threadId,
             },
             forkedFrom,
             createdAt: now,
@@ -6963,27 +6968,29 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           },
         });
       }
-      for (const [runId, ordinal, folder] of [
-        [legacyRunId, 1, {}],
-        [movedRunId, 2, { cwd: "/b" }],
+      for (const [threadId, runId, ordinal, folder] of [
+        [sourceThreadId, legacyRunId, 1, {}],
+        [sourceThreadId, movedRunId, 2, { cwd: "/b" }],
+        [thread("late"), run("late-legacy"), 1, {}],
+        [thread("late"), run("late-moved"), 2, { cwd: "/b" }],
       ] as const) {
-        const nodeId = NodeId.make(`node:projection-fork-receipt:${ordinal}`);
+        const nodeId = NodeId.make(`node:${runId}`);
         yield* projectionStore.apply({
-          id: EventId.make(`event:projection-fork-receipt:run:${ordinal}`),
+          id: EventId.make(`event:${runId}`),
           type: "run.created",
-          threadId: sourceThreadId,
+          threadId,
           runId,
           nodeId,
           driver,
           occurredAt: now,
           payload: {
             id: runId,
-            threadId: sourceThreadId,
+            threadId,
             ordinal,
             providerInstanceId,
             modelSelection,
             providerThreadId: null,
-            userMessageId: MessageId.make(`message:projection-fork-receipt:${ordinal}`),
+            userMessageId: MessageId.make(`message:${runId}`),
             rootNodeId: nodeId,
             activeAttemptId: null,
             status: "completed",
@@ -6996,16 +7003,21 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           },
         });
       }
-      const applyItem = (suffix: string, runId: RunId | null, ordinal: number) =>
+      const applyItem = (
+        suffix: string,
+        runId: RunId | null,
+        ordinal: number,
+        threadId = sourceThreadId,
+      ) =>
         projectionStore.apply({
           id: EventId.make(`event:projection-fork-receipt:item:${suffix}`),
           type: "turn-item.updated",
-          threadId: sourceThreadId,
+          threadId,
           ...(runId === null ? {} : { runId }),
           occurredAt: now,
           payload: {
             id: TurnItemId.make(`turn-item:projection-fork-receipt:${suffix}`),
-            threadId: sourceThreadId,
+            threadId,
             runId,
             nodeId: null,
             providerThreadId: null,
@@ -7019,7 +7031,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             completedAt: now,
             updatedAt: now,
             ...(runId === null
-              ? { type: "system_notice", message: suffix, previousFolder: "/a" }
+              ? { type: "system_notice", message: suffix, previousFolder: `/${suffix}` }
               : {
                   type: "assistant_message",
                   messageId: MessageId.make(`message:projection-fork-receipt:${suffix}`),
@@ -7029,9 +7041,13 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           },
         });
       yield* applyItem("legacy", legacyRunId, 1);
-      yield* applyItem("receipt", null, 2);
+      yield* applyItem("a", null, 2);
       yield* applyItem("moved-one", movedRunId, 3);
       yield* applyItem("moved-two", movedRunId, 4);
+      yield* applyItem("late-moved", run("late-moved"), 1, thread("late"));
+      yield* applyItem("late-a", null, 2, thread("late"));
+      yield* applyItem("late-legacy", run("late-legacy"), 3, thread("late"));
+      yield* applyItem("late-c", null, 4, thread("late"));
 
       const projection = yield* projectionStore.getThreadProjection(targetThreadId);
       const shape = (rows: typeof projection.visibleTurnItems) =>
@@ -7054,22 +7070,45 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         projection.runFolders?.map((run) => [run.id, run.cwd]),
         [[movedRunId, "/b"]],
       );
-      const timelinePage = yield* projectionStore.getTimelinePage(targetThreadId, {
-        view: "activity",
-        limit: 10,
-      });
-      assert.deepEqual(timelinePage.items, projection.visibleTurnItems);
-      const window = (rowLimit: number, anchorItemId?: TurnItemId) =>
+      const page = (threadId: ThreadId) =>
         Effect.map(
-          projectionStore.getThreadSnapshotWindow(targetThreadId, { rowLimit, anchorItemId }),
+          projectionStore.getTimelinePage(threadId, { view: "activity", limit: 10 }),
+          (timelinePage) => timelinePage.items,
+        );
+      assert.deepEqual(yield* page(targetThreadId), projection.visibleTurnItems);
+      const window = (rowLimit: number, anchorItemId?: TurnItemId, threadId = targetThreadId) =>
+        Effect.map(
+          projectionStore.getThreadSnapshotWindow(threadId, { rowLimit, anchorItemId }),
           (snapshot) => shape(snapshot.projection.visibleTurnItems),
         );
+      const item = (suffix: string) =>
+        TurnItemId.make(`turn-item:projection-fork-receipt:${suffix}`);
       assert.deepEqual(yield* window(2), ["moved-one", "moved-two", "fork"]);
       assert.deepEqual(yield* window(3), ["/a", "moved-one", "moved-two", "fork"]);
-      assert.deepEqual(
-        yield* window(2, TurnItemId.make("turn-item:projection-fork-receipt:moved-one")),
-        ["/a", "moved-one", "fork"],
-      );
+      assert.deepEqual(yield* window(2, item("moved-one")), ["/a", "moved-one", "fork"]);
+      assert.deepEqual(yield* window(2, item("a")), ["legacy", "/a", "fork"]);
+
+      const legacyFork = thread("legacy-fork");
+      const legacyProjection = yield* projectionStore.getThreadProjection(legacyFork);
+      assert.deepEqual(yield* page(legacyFork), legacyProjection.visibleTurnItems);
+      for (const rows of [
+        shape(legacyProjection.visibleTurnItems),
+        yield* window(2, undefined, legacyFork),
+        yield* window(3, undefined, legacyFork),
+      ]) {
+        assert.deepEqual(rows, ["legacy", "/a", "fork"]);
+      }
+
+      const receipts = (rows: ReadonlyArray<string | undefined>) =>
+        rows.filter((row) => row?.startsWith("/"));
+      const lateFork = thread("late-fork");
+      for (const rows of [
+        shape((yield* projectionStore.getThreadProjection(lateFork)).visibleTurnItems),
+        shape(yield* page(lateFork)),
+        yield* window(10, undefined, lateFork),
+      ]) {
+        assert.deepEqual(receipts(rows), ["/late-a"]);
+      }
     }),
   );
 

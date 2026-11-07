@@ -2697,7 +2697,6 @@ export function deriveRunFolderByRunId(signature: string): ReadonlyMap<RunId, Ti
   );
 }
 
-/** Receipts are read before display filtering, so a hidden one still covers the rows before it. */
 export function receiptFolderByEntryId(
   entries: ReadonlyArray<TimelineEntry>,
 ): ReadonlyMap<string, TimelineRunFolder> {
@@ -2730,13 +2729,11 @@ export function timelineRowFolder(
             ? row.entry.runId
             : null;
   const entryId =
-    row.kind === "message"
-      ? row.id
-      : row.kind === "work"
-        ? row.groupedEntries[0]?.id
-        : row.kind === "work-live"
-          ? row.entry.id
-          : undefined;
+    row.kind === "work"
+      ? row.groupedEntries[0]?.id
+      : row.kind === "work-live"
+        ? row.entry.id
+        : row.id;
   return (
     (runId == null ? undefined : runFolderByRunId.get(runId)) ??
     (entryId === undefined ? undefined : receiptFolderByEntryId.get(entryId))

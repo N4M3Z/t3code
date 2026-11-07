@@ -4625,6 +4625,12 @@ describe("timelineRowFolder", () => {
     const items = [
       user("imported"),
       user("legacy", RunId.make("run-legacy")),
+      item("plan", RunId.make("run-legacy"), {
+        type: "proposed_plan",
+        planId: "plan",
+        markdown: "plan",
+        streaming: false,
+      }),
       user("in-c", RunId.make("run-c")),
       notice("move-a", "/a"),
       user("after-a"),
@@ -4660,9 +4666,11 @@ describe("timelineRowFolder", () => {
       expect(rows.some((row) => row.kind === "work")).toBe(toolCallVisibility === "showAll");
       expect(
         rows.flatMap((row) =>
-          row.kind === "message" ? [timelineRowFolder(row, folders, receipts)?.cwd] : [],
+          row.kind === "message" || row.kind === "proposed-plan"
+            ? [timelineRowFolder(row, folders, receipts)?.cwd]
+            : [],
         ),
-      ).toEqual(["/a", "/a", "/c", "/b", undefined]);
+      ).toEqual(["/a", "/a", "/a", "/c", "/b", undefined]);
     }
   });
 });

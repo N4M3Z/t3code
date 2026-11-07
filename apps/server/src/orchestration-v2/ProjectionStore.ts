@@ -1382,33 +1382,49 @@ type ForkHistoryItem = Pick<OrchestrationV2TurnItem, "runId" | "ordinal" | "type
   readonly previousFolder?: string | undefined;
 };
 
-// Run-less move receipts follow the rows they cover into the fork, up to the SQL fork boundary.
-function isTurnItemAtOrBeforeRun(input: {
-  readonly historyOrigin: OrchestrationV2ThreadProjection["thread"]["historyOrigin"];
+const isMoveReceipt = (item: ForkHistoryItem) =>
+  item.runId === null && item.type === "system_notice" && item.previousFolder !== undefined;
+
+// Same boundary as covering_receipt in readProjection's fork window SQL.
+function forkBoundaryOrdinal(input: {
   readonly items: ReadonlyArray<ForkHistoryItem>;
   readonly runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>;
   readonly sourceRunOrdinal: number;
-}): (item: ForkHistoryItem) => boolean {
-  const runAtOrBefore = (runId: OrchestrationV2TurnItem["runId"]) => {
-    const ordinal = runId === null ? undefined : input.runOrdinalById.get(runId);
-    return ordinal !== undefined && ordinal <= input.sourceRunOrdinal;
-  };
-  let boundaryOrdinal = -1;
+}): number {
+  let boundaryRun = -1;
+  let boundary = -1;
   for (const item of input.items) {
-    if (runAtOrBefore(item.runId) && item.ordinal > boundaryOrdinal) boundaryOrdinal = item.ordinal;
+    const run = item.runId === null ? undefined : input.runOrdinalById.get(item.runId);
+    if (run === undefined || run > input.sourceRunOrdinal || run < boundaryRun) continue;
+    boundaryRun = run;
+    boundary = item.ordinal;
   }
-  return (item) =>
-    item.runId === null
-      ? input.historyOrigin === "v1_import" ||
-        (item.type === "system_notice" &&
-          item.previousFolder !== undefined &&
-          item.ordinal <= boundaryOrdinal)
-      : runAtOrBefore(item.runId);
+  return (
+    input.items.find((item) => isMoveReceipt(item) && item.ordinal > boundary)?.ordinal ?? boundary
+  );
+}
+
+function isTurnItemAtOrBeforeRun(input: {
+  readonly historyOrigin: OrchestrationV2ThreadProjection["thread"]["historyOrigin"];
+  readonly item: ForkHistoryItem;
+  readonly boundaryOrdinal: number;
+  readonly runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>;
+  readonly sourceRunOrdinal: number;
+}): boolean {
+  if (input.item.runId === null) {
+    return (
+      input.historyOrigin === "v1_import" ||
+      (isMoveReceipt(input.item) && input.item.ordinal <= input.boundaryOrdinal)
+    );
+  }
+  const ordinal = input.runOrdinalById.get(input.item.runId);
+  return ordinal !== undefined && ordinal <= input.sourceRunOrdinal;
 }
 
 function visibleTurnItemsThroughRun(input: {
   readonly sourceProjection: OrchestrationV2ThreadProjection;
   readonly sourceRunId: NonNullable<OrchestrationV2TurnItem["runId"]>;
+  readonly boundaryOrdinal?: number | undefined;
 }): Array<Omit<OrchestrationV2ProjectedTurnItem, "position">> {
   const sourceRun = input.sourceProjection.runs.find((run) => run.id === input.sourceRunId);
   if (sourceRun === undefined) {
@@ -1416,12 +1432,13 @@ function visibleTurnItemsThroughRun(input: {
   }
 
   const runOrdinalById = new Map(input.sourceProjection.runs.map((run) => [run.id, run.ordinal]));
-  const inheritedByFork = isTurnItemAtOrBeforeRun({
-    historyOrigin: input.sourceProjection.thread.historyOrigin,
-    items: input.sourceProjection.turnItems,
-    runOrdinalById,
-    sourceRunOrdinal: sourceRun.ordinal,
-  });
+  const boundaryOrdinal =
+    input.boundaryOrdinal ??
+    forkBoundaryOrdinal({
+      items: input.sourceProjection.turnItems,
+      runOrdinalById,
+      sourceRunOrdinal: sourceRun.ordinal,
+    });
   const inheritedPrefix = input.sourceProjection.visibleTurnItems
     .filter(
       (row) => row.item.threadId !== input.sourceProjection.thread.id || row.item.type === "fork",
@@ -1443,7 +1460,13 @@ function visibleTurnItemsThroughRun(input: {
       ) {
         return false;
       }
-      return inheritedByFork(item);
+      return isTurnItemAtOrBeforeRun({
+        historyOrigin: input.sourceProjection.thread.historyOrigin,
+        item,
+        boundaryOrdinal,
+        runOrdinalById,
+        sourceRunOrdinal: sourceRun.ordinal,
+      });
     }),
   );
 
@@ -1482,6 +1505,7 @@ function buildVisibleTurnItems(input: {
   readonly projection: OrchestrationV2ThreadProjection;
   readonly sourceProjection: OrchestrationV2ThreadProjection | null;
   readonly inheritedRowCount?: number;
+  readonly boundaryOrdinal?: number | undefined;
 }): Array<OrchestrationV2ProjectedTurnItem> {
   const forkedFrom = inheritedRunFork(input.projection.thread);
   if (
@@ -1497,6 +1521,7 @@ function buildVisibleTurnItems(input: {
       : visibleTurnItemsThroughRun({
           sourceProjection: input.sourceProjection,
           sourceRunId: forkedFrom.runId,
+          boundaryOrdinal: input.boundaryOrdinal,
         });
   const markerItem = makeForkMarkerTurnItem({
     targetProjection: input.projection,
@@ -3916,12 +3941,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       ),
                       -1
                     ) AS ordinal
+                  ), covering_receipt AS (
+                    SELECT COALESCE(
+                      (
+                        SELECT MIN(ordinal)
+                        FROM orchestration_v2_projection_turn_items
+                        WHERE thread_id = ${forkedFrom.threadId}
+                          AND run_id IS NULL
+                          AND type = 'system_notice'
+                          AND json_extract(payload_json, '$.previousFolder') IS NOT NULL
+                          AND ordinal > (SELECT ordinal FROM effective_boundary)
+                      ),
+                      (SELECT ordinal FROM effective_boundary)
+                    ) AS ordinal
                   )
                   SELECT turn_item_id
                   FROM orchestration_v2_projection_turn_items
                   WHERE thread_id = ${forkedFrom.threadId}
                     AND ordinal <= COALESCE(
-                      (SELECT ordinal FROM effective_boundary),
+                      (SELECT ordinal FROM covering_receipt),
                       -1
                     )
                     AND (
@@ -3931,7 +3969,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                          WHERE thread_id = ${forkedFrom.threadId}
                            AND turn_item_id = ${historyAnchor?.itemId ?? null}
                          LIMIT 1),
-                        (SELECT ordinal FROM effective_boundary),
+                        (SELECT ordinal FROM covering_receipt),
                         -1
                       )
                     )
@@ -4002,7 +4040,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           new Set([...seenThreadIds, threadId]),
           sourceWindow,
         );
-        const visibleTurnItems = buildVisibleTurnItems({ projection, sourceProjection });
+        const visibleTurnItems = buildVisibleTurnItems({
+          projection,
+          sourceProjection,
+          // A source window's SQL already stops at the fork boundary.
+          boundaryOrdinal: sourceWindow === undefined ? undefined : Number.POSITIVE_INFINITY,
+        });
         const runIds = new Set(visibleTurnItems.map((row) => row.item.runId));
         return {
           ...projection,
@@ -5847,8 +5890,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         if (sourceRun !== undefined) {
           const ordinals = new Map(source.records.runs.map((run) => [run.id, run.ordinal]));
           const sourceItems = source.local.map((row) => row.item);
-          const inheritedByFork = isTurnItemAtOrBeforeRun({
-            historyOrigin: source.records.thread.historyOrigin,
+          const boundaryOrdinal = forkBoundaryOrdinal({
             items: sourceItems,
             runOrdinalById: ordinals,
             sourceRunOrdinal: sourceRun.ordinal,
@@ -5863,7 +5905,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   item: row.item,
                   attempts: source.records.attempts,
                   items: sourceItems,
-                }) && inheritedByFork(row.item),
+                }) &&
+                isTurnItemAtOrBeforeRun({
+                  historyOrigin: source.records.thread.historyOrigin,
+                  item: row.item,
+                  boundaryOrdinal,
+                  runOrdinalById: ordinals,
+                  sourceRunOrdinal: sourceRun.ordinal,
+                }),
             ),
           ].map((row) => ({ ...row, visibility: "inherited" }));
         }

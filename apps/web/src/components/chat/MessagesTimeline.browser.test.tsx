@@ -1591,6 +1591,19 @@ describe("MessagesTimeline file links", () => {
     };
     const entries = [
       message("See [notes](notes.txt).", {}, "imported"),
+      {
+        id: "plan",
+        kind: "proposed-plan",
+        createdAt: CREATED_AT,
+        proposedPlan: {
+          id: "plan",
+          runId: null,
+          planMarkdown: "See [plan](plan-notes.txt).",
+          status: "active",
+          createdAt: CREATED_AT,
+          updatedAt: CREATED_AT,
+        },
+      } as Entry,
       work("move-receipt", {
         itemType: "system_notice",
         label: "Moved.",
@@ -1649,13 +1662,14 @@ describe("MessagesTimeline file links", () => {
       return openFile.mock.calls.map((call) => call[1]);
     };
     await vi.waitFor(() =>
-      expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(4),
+      expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(5),
     );
     expect(screen.container.querySelector("a.chat-markdown-file-link")?.getAttribute("href")).toBe(
       "/repo-before/notes.txt",
     );
     expect(await opened()).toEqual([
       "/repo-before/notes.txt",
+      "/repo-before/plan-notes.txt",
       "src/a.ts",
       "src/b.ts",
       "src/c.ts",
@@ -1671,6 +1685,7 @@ describe("MessagesTimeline file links", () => {
     await vi.waitFor(async () =>
       expect(await opened()).toEqual([
         "/repo-before/notes.txt",
+        "/repo-before/plan-notes.txt",
         "/repo-a/app/src/a.ts",
         "src/b.ts",
         "/repo-old/src/c.ts",
@@ -1705,5 +1720,8 @@ describe("MessagesTimeline file links", () => {
     expect(screen.container.querySelector("a.chat-markdown-file-link")?.getAttribute("href")).toBe(
       "/repo-before/notes.txt",
     );
+    expect(
+      screen.container.querySelectorAll("a.chat-markdown-file-link")[1]?.getAttribute("href"),
+    ).toBe("/repo-before/plan-notes.txt");
   });
 });

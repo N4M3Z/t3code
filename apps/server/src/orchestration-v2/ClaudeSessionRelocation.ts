@@ -44,9 +44,9 @@ export function claudeConfigDirRefusal(
   path: Path.Path,
   environment: NodeJS.ProcessEnv,
 ): string | undefined {
-  const configDir = environment.CLAUDE_CONFIG_DIR?.trim();
-  return configDir && !path.isAbsolute(configDir)
-    ? `CLAUDE_CONFIG_DIR is the relative path "${configDir}", so Claude's configuration folder would change with the working folder.`
+  const configDir = environment.CLAUDE_CONFIG_DIR;
+  return configDir !== undefined && !path.isAbsolute(configDir)
+    ? `CLAUDE_CONFIG_DIR ("${configDir}") is not an absolute path, so Claude's configuration folder would change with the working folder.`
     : undefined;
 }
 
@@ -110,29 +110,53 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
     });
     const restore = (aside: string | undefined, destination: string) =>
       aside === undefined ? Effect.void : fileSystem.rename(aside, destination).pipe(Effect.ignore);
+    const copyDirectory: (
+      from: string,
+      to: string,
+    ) => Effect.Effect<void, PlatformError.PlatformError> = Effect.fnUntraced(function* (
+      from: string,
+      to: string,
+    ) {
+      yield* fileSystem.makeDirectory(to, { recursive: true, mode: 0o700 });
+      for (const entry of yield* fileSystem.readDirectoryEntries(from)) {
+        yield* (entry.type === "Directory" ? copyDirectory : fileSystem.copyFile)(
+          path.join(from, entry.name),
+          path.join(to, entry.name),
+        );
+      }
+    });
     const renameWithFallbacks = (from: string, to: string) =>
       fileSystem.rename(from, to).pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
             const code = errnoCode(error);
-            const occupied =
-              code === "EEXIST" || code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
-            if (!occupied && code !== "EXDEV") return yield* error;
-            const aside = yield* setAside(to);
-            if (occupied) {
+            if (code === "EEXIST" || code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY") {
+              const aside = yield* setAside(to).pipe(Effect.orElseSucceed(() => undefined));
               return yield* fileSystem
                 .rename(from, to)
                 .pipe(Effect.tapError(() => restore(aside, to)));
             }
-            yield* fileSystem
-              .copy(from, to)
-              .pipe(
-                Effect.tapError(() =>
-                  fileSystem
-                    .remove(to, { recursive: true, force: true })
-                    .pipe(Effect.ignore, Effect.andThen(restore(aside, to))),
-                ),
-              );
+            if (code !== "EXDEV") return yield* error;
+            yield* fileSystem.copyFile(from, to).pipe(
+              Effect.catch((copyError) =>
+                Effect.gen(function* () {
+                  const copyCode = errnoCode(copyError);
+                  if (copyCode !== "EISDIR" && copyCode !== "ENOTSUP" && copyCode !== "EPERM") {
+                    return yield* copyError;
+                  }
+                  const aside = yield* setAside(to);
+                  yield* copyDirectory(from, to).pipe(
+                    Effect.tapError(() =>
+                      aside === undefined
+                        ? Effect.void
+                        : fileSystem
+                            .remove(to, { recursive: true, force: true })
+                            .pipe(Effect.ignore, Effect.andThen(restore(aside, to))),
+                    ),
+                  );
+                }),
+              ),
+            );
             yield* fileSystem.remove(from, { recursive: true, force: true });
           }),
         ),
@@ -147,39 +171,45 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
     const oldFile = path.join(oldDir, `${input.sessionId}.jsonl`);
     const newFile = path.join(newDir, `${input.sessionId}.jsonl`);
     const record = `${encodeJson({ type: "relocated", sessionId: input.sessionId, relocatedCwd })}\n`;
-    if (!(yield* fileSystem.exists(oldFile))) return;
-    if (oldFile === newFile) {
-      return yield* fileSystem.writeFileString(newFile, record, { flag: "a" });
+    const sourcePresent = yield* fileSystem.exists(oldFile);
+    // A transcript at the destination only is a move the process lost; none at either end is diskless.
+    if (!sourcePresent && !(yield* fileSystem.exists(newFile))) return;
+    const moving = sourcePresent && oldDir !== newDir;
+    if (moving) {
+      yield* fileSystem.makeDirectory(newDir, { recursive: true, mode: 0o700 });
+      const [oldInfo, newInfo] = yield* Effect.all([
+        fileSystem.stat(oldDir),
+        fileSystem.stat(newDir),
+      ]);
+      const sameDirectory = oldInfo.dev === newInfo.dev && Equal.equals(oldInfo.ino, newInfo.ino);
+      const superseded = sameDirectory ? undefined : yield* setAside(newFile);
+      yield* renameWithFallbacks(oldFile, newFile).pipe(
+        Effect.tapError(() => restore(superseded, newFile)),
+      );
     }
-    yield* fileSystem.makeDirectory(newDir, { recursive: true, mode: 0o700 });
-    const [oldInfo, newInfo] = yield* Effect.all([
-      fileSystem.stat(oldDir),
-      fileSystem.stat(newDir),
-    ]);
-    const sameDirectory = oldInfo.dev === newInfo.dev && Equal.equals(oldInfo.ino, newInfo.ino);
-    const superseded = sameDirectory ? undefined : yield* setAside(newFile);
-    yield* renameWithFallbacks(oldFile, newFile).pipe(
-      Effect.tapError(() => restore(superseded, newFile)),
-    );
-    yield* renameWithFallbacks(
-      path.join(oldDir, input.sessionId),
-      path.join(newDir, input.sessionId),
-    ).pipe(
-      Effect.catchIf(
-        (error) => error.reason._tag === "NotFound",
-        () => Effect.void,
-      ),
-      Effect.catch((cause) =>
-        Effect.logWarning("orchestration-v2.claude-relocation.subagent-folder-failed", { cause }),
-      ),
-    );
-    yield* fileSystem
-      .writeFileString(newFile, record, { flag: "a" })
-      .pipe(
+    if (oldDir !== newDir) {
+      yield* renameWithFallbacks(
+        path.join(oldDir, input.sessionId),
+        path.join(newDir, input.sessionId),
+      ).pipe(
+        Effect.catchIf(
+          (error) => error.reason._tag === "NotFound",
+          () => Effect.void,
+        ),
         Effect.catch((cause) =>
-          Effect.logWarning("orchestration-v2.claude-relocation.record-failed", { cause }),
+          Effect.logWarning("orchestration-v2.claude-relocation.subagent-folder-failed", { cause }),
         ),
       );
+    }
+    if (moving || !(yield* fileSystem.readFileString(newFile)).endsWith(record)) {
+      yield* fileSystem
+        .writeFileString(newFile, record, { flag: "a" })
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("orchestration-v2.claude-relocation.record-failed", { cause }),
+          ),
+        );
+    }
   },
 );
 

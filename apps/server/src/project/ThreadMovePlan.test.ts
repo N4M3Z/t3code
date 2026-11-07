@@ -246,13 +246,14 @@ it.effect.each([
       effects.map((effect) => [effect.threadId, effect.request.type]),
       [
         ["t", "provider-session.detach"],
-        ["side", "provider-session.detach"],
         ["t", "scheduled-tasks.move"],
+        ["side", "provider-session.detach"],
+        ["side", "scheduled-tasks.move"],
       ],
     );
     assert.deepEqual(effects.at(-1)?.request, {
       type: "scheduled-tasks.move",
-      threadIds: [ThreadId.make("t"), ThreadId.make("side")],
+      threadIds: [ThreadId.make("side")],
       projectId: projectB,
     });
     const after = events
@@ -367,8 +368,10 @@ it.effect("relocates each Claude member's native session after its detach", () =
       [
         ["t", "provider-session.detach"],
         ["t", "provider-session.relocate-storage"],
-        ["side", "provider-session.relocate-storage"],
         ["t", "scheduled-tasks.move"],
+        ["side", "provider-session.relocate-storage"],
+        ["side", "scheduled-tasks.move"],
+        ["codex", "scheduled-tasks.move"],
       ],
     );
     assert.deepEqual(

@@ -169,16 +169,16 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
             : memberMoveNoticeMessage({ threadTitle, folder: input.folder }),
       }),
     });
+    effects.push({
+      id: `effect:${command.commandId}:scheduled-tasks.move:${threadId}`,
+      commandId: command.commandId,
+      threadId,
+      request: {
+        type: "scheduled-tasks.move",
+        threadIds: [threadId],
+        projectId: command.projectId,
+      },
+    });
   }
-  effects.push({
-    id: `effect:${command.commandId}:scheduled-tasks.move`,
-    commandId: command.commandId,
-    threadId: command.threadId,
-    request: {
-      type: "scheduled-tasks.move",
-      threadIds: input.members.map((member) => member.projection.thread.id),
-      projectId: command.projectId,
-    },
-  });
   return { events, effects };
 });

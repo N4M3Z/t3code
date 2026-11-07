@@ -700,21 +700,21 @@ it.effect.each<{
       thread: { threadId: "t1", title: "t1" },
     },
   },
-  {
-    name: "a Claude instance with a relative CLAUDE_CONFIG_DIR",
+  ...["", "  ", " /config", ".claude-config"].map((configDir) => ({
+    name: `a Claude instance with CLAUDE_CONFIG_DIR ${JSON.stringify(configDir)}`,
     overrides: () => ({
-      providerInstances: instances(["claudeAgent", claude("2.1.223", ".claude-config")]),
+      providerInstances: instances(["claudeAgent", claude("2.1.223", configDir)]),
     }),
     expected: {
       _tag: "refused",
-      reason: expect.stringContaining("CLAUDE_CONFIG_DIR (.claude-config) is relative"),
+      reason: expect.stringContaining(`CLAUDE_CONFIG_DIR ("${configDir}") is not an absolute path`),
       thread: { threadId: "t1", title: "t1" },
     },
-  },
+  })),
   {
     name: "nothing when CLAUDE_CONFIG_DIR is absolute",
     overrides: () => ({
-      providerInstances: instances(["claudeAgent", claude("2.1.223", "/srv/claude-config")]),
+      providerInstances: instances(["claudeAgent", claude("2.1.223", "/config")]),
     }),
     expected: movesTo("B"),
   },

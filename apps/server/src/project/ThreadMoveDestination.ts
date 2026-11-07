@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 
+import { claudeConfigDirRefusal } from "../orchestration-v2/ClaudeSessionRelocation.ts";
 import { threadHasUnfinishedWork } from "../orchestration-v2/Orchestrator.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 
@@ -96,7 +97,6 @@ const refused = (reason: string, named?: Pick<Refused, "thread" | "projects">): 
 const namedProject = (project: Project) => ({ projectId: project.id, title: project.title });
 const namedThread = (thread: ThreadMoveShell) => ({ threadId: thread.id, title: thread.title });
 const quote = (title: string) => `"${title}"`;
-const isArchived = (project: Project) => project.archivedAt != null;
 
 const unreadable = (target: string) => (cause: unknown) =>
   new ThreadMoveError({ message: `Could not read ${target}.`, cause });
@@ -118,7 +118,7 @@ const matchProject = (folder: string, matches: ReadonlyArray<Project>) => {
     );
   }
   const match = matches[0];
-  return match !== undefined && isArchived(match)
+  return match !== undefined && match.archivedAt != null
     ? refused(
         `${folder} is the root of the archived project ${quote(match.title)}. Unarchive it to move the thread there.`,
         { projects: [namedProject(match)] },
@@ -159,7 +159,6 @@ const checkMember = Effect.fn("ThreadMoveDestination.checkMember")(function* (
   if (threadHasUnfinishedWork(yield* probes.threadRecords(member.id))) {
     return name(`${title} is still working. Try again when the turn ends.`);
   }
-  // A failed probe cannot confirm that the work ended.
   if (
     yield* probes.hasBackgroundWork(member.id).pipe(Effect.catchCause(() => Effect.succeed(true)))
   ) {
@@ -199,12 +198,12 @@ const checkMember = Effect.fn("ThreadMoveDestination.checkMember")(function* (
       `${title} uses ${member.providerInstanceId}, which the destination project disables.`,
     );
   }
-  const configDir =
-    instance.driver === CLAUDE_DRIVER ? (instance.environment.CLAUDE_CONFIG_DIR?.trim() ?? "") : "";
-  if (configDir !== "" && !probes.path.isAbsolute(configDir)) {
-    return name(
-      `${title} uses a Claude instance whose CLAUDE_CONFIG_DIR (${configDir}) is relative, so its configuration folder would change with the move.`,
-    );
+  const configDirRefusal =
+    instance.driver === CLAUDE_DRIVER
+      ? claudeConfigDirRefusal(probes.path, instance.environment)
+      : undefined;
+  if (configDirRefusal !== undefined) {
+    return name(`${title} uses a Claude instance whose ${configDirRefusal}`);
   }
   return undefined;
 });
@@ -280,7 +279,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     }
     if (folder === threadFolder) {
       const others = projectsAt(folder).filter(
-        (project) => project.id !== thread.projectId && !isArchived(project),
+        (project) => project.id !== thread.projectId && project.archivedAt == null,
       );
       return others.length > 0
         ? refused(
@@ -366,7 +365,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
   if (from === null) return { _tag: "move" as const, destination, members, leaving: null };
   const exists = yield* fileSystem.exists(from).pipe(Effect.orElseSucceed(() => true));
   const atFrom = projectsAt(threadFolder);
-  const project = atFrom.find((candidate) => !isArchived(candidate)) ?? atFrom[0];
+  const project = atFrom.find((candidate) => candidate.archivedAt == null) ?? atFrom[0];
   const memberIds = new Set(members.map((member) => member.id));
   const otherThreads: Array<ReturnType<typeof namedThread>> = [];
   for (const other of threads) {
@@ -392,7 +391,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
       ? `The folder ${from} stays on disk with all its files until you remove it.`
       : "The folder no longer exists.",
     wayBack:
-      project !== undefined && !isArchived(project)
+      project !== undefined && project.archivedAt == null
         ? "cd"
         : scratchRoot !== undefined && isWithinRoot(path, threadFolder, scratchRoot)
           ? "none"

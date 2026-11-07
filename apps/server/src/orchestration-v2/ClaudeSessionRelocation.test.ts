@@ -25,24 +25,6 @@ const sessionId = "session-relocated";
 const transcript = `${JSON.stringify({ type: "user", sessionId })}\n`;
 const withConfig = { CLAUDE_CONFIG_DIR: "/config" };
 
-it.each([
-  { version: "2.1.222", named: "2.1.222" },
-  { version: "2.1.223", named: undefined },
-  { version: "2.2.0", named: undefined },
-  { version: "next", named: '"next"' },
-  { version: null, named: "an unknown version" },
-])("gates a Claude folder move on CLI version $version", ({ version, named }) => {
-  const refusal = ClaudeSessionRelocation.claudeFolderMoveVersionRefusal({ version });
-  assert.equal(refusal === undefined, named === undefined);
-  if (named !== undefined) {
-    assert.include(refusal ?? "", named);
-    assert.include(refusal ?? "", "Refreshing the providers");
-  }
-  if (version === null) {
-    assert.equal(ClaudeSessionRelocation.claudeFolderMoveVersionRefusal(undefined), refusal);
-  }
-});
-
 it.effect("refuses a CLAUDE_CONFIG_DIR that is not an absolute path", () =>
   Effect.gen(function* () {
     const path = yield* Path.Path;

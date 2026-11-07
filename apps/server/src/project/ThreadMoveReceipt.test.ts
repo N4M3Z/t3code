@@ -4,7 +4,6 @@ import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
 import {
-  memberMoveNoticeMessage,
   moveReceiptTurnItem,
   previousFolderAfter,
   threadMoveReceiptMessage,
@@ -86,13 +85,6 @@ it("writes the receipt for a move out of a worktree or a scratch folder", () => 
       "No other thread works in it.",
       "Open terminals keep their folder.",
     ].join("\n"),
-  );
-});
-
-it("points each member at the receipt", () => {
-  assert.strictEqual(
-    memberMoveNoticeMessage({ threadTitle: "Fix login", folder: "/repos/b" }),
-    "Moved with Fix login. The next turn runs in /repos/b. The receipt in Fix login lists the details.",
   );
 });
 

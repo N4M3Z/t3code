@@ -1,7 +1,6 @@
-import type { ServerProvider, ThreadId } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Arr from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -26,27 +25,10 @@ class ClaudeSessionRelocationError extends Schema.TaggedError<ClaudeSessionReloc
   },
 ) {}
 
-const FOLDER_MOVE_MIN_VERSION = "2.1.223";
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeSessionRecord = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ sessionId: Schema.String })),
 );
-
-export function claudeFolderMoveVersionRefusal(
-  snapshot: Pick<ServerProvider, "version"> | undefined,
-): string | undefined {
-  const version = snapshot?.version ?? null;
-  const named =
-    version === null
-      ? "an unknown version"
-      : parseSemver(version) === null
-        ? `a version it cannot read ("${version}")`
-        : version;
-  if (named === version && compareSemverVersions(version, FOLDER_MOVE_MIN_VERSION) >= 0) {
-    return undefined;
-  }
-  return `Moving a Claude session to another folder needs Claude Code ${FOLDER_MOVE_MIN_VERSION} or later, and this instance reports ${named}. Refreshing the providers checks the version again.`;
-}
 
 export function claudeConfigDirRefusal(
   path: Path.Path,

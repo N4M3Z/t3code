@@ -11,6 +11,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   ProviderThreadId,
   RunAttemptId,
   RunId,
@@ -58,7 +59,6 @@ import * as ThreadMoveService from "./ThreadMoveService.ts";
 const codexId = ProviderInstanceId.make("codex");
 const SCRATCH_ID = ProjectId.make("scratch");
 
-/** The background-work probe the thread management mock answers with. */
 class Probe extends Context.Service<
   Probe,
   Ref.Ref<(threadId: ThreadId) => Effect.Effect<boolean>>
@@ -229,7 +229,6 @@ function threadCreated(input: {
   };
 }
 
-/** Project A at `a`, project B at `b`, the folders `w` (a worktree) and `plain` (no project). */
 const setup = Effect.fn("ThreadMoveServiceTest.setup")(function* (name: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -740,6 +739,68 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
           assert.equal((yield* shellOf(id)).projectId, b.id);
         }
         assert.equal((yield* shellOf(forkId)).projectId, a.id);
+      }),
+    ),
+  );
+
+  it.effect("queues each member's task move behind that member's detach", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { at, a, b, thread } = yield* setup("queue");
+        const service = yield* ThreadMoveService.ThreadMoveService;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = yield* thread("t", a.id, null);
+        const sideId = yield* thread("side", a.id, null, {
+          parent: threadId,
+          relationship: "fork",
+          sideChat: true,
+        });
+        const driver = ProviderDriverKind.make("codex");
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("queue:attached"),
+              type: "provider-session.attached",
+              threadId: sideId,
+              driver,
+              providerInstanceId: codexId,
+              occurredAt: createdAt,
+              payload: {
+                id: ProviderSessionId.make("queue:session"),
+                driver,
+                providerInstanceId: codexId,
+                status: "ready",
+                cwd: at("a"),
+                model: null,
+                capabilities: CodexProviderCapabilitiesV2,
+                createdAt,
+                updatedAt: createdAt,
+                lastError: null,
+              },
+            },
+          ],
+        });
+        const taskMove = (id: ThreadId) => ({
+          type: "scheduled-tasks.move" as const,
+          threadIds: [id],
+          projectId: b.id,
+        });
+
+        yield* (yield* SqlClient.SqlClient)`UPDATE orchestration_v2_effect_outbox SET status = 'succeeded'`;
+        assert.equal((yield* service.move({ threadId, destination: at("b") }))._tag, "moved");
+        const claim = outbox
+          .claimNext({ workerId: "queue" })
+          .pipe(Effect.map(Option.getOrUndefined));
+        const detach = yield* claim;
+        assert.deepEqual(
+          [detach?.threadId, detach?.request.type],
+          [sideId, "provider-session.detach"],
+        );
+        assert.deepEqual((yield* claim)?.request, taskMove(threadId));
+        assert.isUndefined(yield* claim);
+        yield* outbox.succeed({ effectId: detach!.id, workerId: "queue" });
+        assert.deepEqual((yield* claim)?.request, taskMove(sideId));
       }),
     ),
   );

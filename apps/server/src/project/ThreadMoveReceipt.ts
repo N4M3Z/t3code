@@ -63,7 +63,7 @@ export function memberMoveNoticeMessage(input: {
   readonly threadTitle: string;
   readonly folder: string;
 }): string {
-  return `Moved with ${quote(input.threadTitle)}. The next turn runs in ${input.folder}. The receipt in ${quote(input.threadTitle)} lists the details.`;
+  return `Moved with ${input.threadTitle}. The next turn runs in ${input.folder}. The receipt in ${input.threadTitle} lists the details.`;
 }
 
 export function moveReceiptTurnItem(input: {

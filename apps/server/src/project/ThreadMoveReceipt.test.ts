@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { OrchestrationV2TurnItem, ThreadId, TurnItemId } from "@t3tools/contracts";
+import { OrchestrationV2TurnItemJson, ThreadId, TurnItemId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
@@ -10,7 +10,7 @@ import {
   threadMoveReceiptMessage,
 } from "./ThreadMoveReceipt.ts";
 
-const isTurnItem = Schema.is(OrchestrationV2TurnItem);
+const turnItemJson = Schema.fromJsonString(OrchestrationV2TurnItemJson);
 
 const move = {
   folder: "/repos/b",
@@ -92,13 +92,13 @@ it("writes the receipt for a move out of a worktree or a scratch folder", () => 
 it("points each member at the receipt", () => {
   assert.strictEqual(
     memberMoveNoticeMessage({ threadTitle: "Fix login", folder: "/repos/b" }),
-    'Moved with "Fix login". The next turn runs in /repos/b. The receipt in "Fix login" lists the details.',
+    "Moved with Fix login. The next turn runs in /repos/b. The receipt in Fix login lists the details.",
   );
 });
 
 it("builds a run-less notice at the given ordinal with the move time", () => {
   const movedAt = DateTime.makeUnsafe("2026-11-07T10:00:00.000Z");
-  const item = moveReceiptTurnItem({
+  const built = moveReceiptTurnItem({
     id: TurnItemId.make("turn-item:receipt"),
     threadId: ThreadId.make("thread:1"),
     ordinal: 7,
@@ -106,11 +106,11 @@ it("builds a run-less notice at the given ordinal with the move time", () => {
     previousFolder: "/repos/a",
     message: "Moved.",
   });
-  assert.isTrue(isTurnItem(item));
+  const item = Schema.decodeSync(turnItemJson)(Schema.encodeSync(turnItemJson)(built));
   assert.strictEqual(item.type, "system_notice");
   assert.strictEqual(item.runId, null);
   assert.strictEqual(item.ordinal, 7);
-  assert.strictEqual(item.startedAt, movedAt);
+  assert.deepStrictEqual(item.startedAt, movedAt);
   assert.strictEqual(item.type === "system_notice" ? item.previousFolder : undefined, "/repos/a");
 });
 

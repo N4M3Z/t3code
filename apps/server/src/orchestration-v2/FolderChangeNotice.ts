@@ -6,7 +6,6 @@ import {
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
-  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Effect from "effect/Effect";
@@ -21,11 +20,6 @@ export function latestCountedRunFolder(projection: {
   readonly providerThreads: ReadonlyArray<Pick<OrchestrationV2ProviderThread, "id" | "driver">>;
   readonly messages: ReadonlyArray<
     Pick<OrchestrationV2ConversationMessage, "id" | "role" | "text" | "attachments">
-  >;
-  readonly turnItems: ReadonlyArray<
-    Pick<OrchestrationV2TurnItem, "type" | "ordinal"> & {
-      readonly previousFolder?: string | undefined;
-    }
   >;
 }): string | undefined {
   const acceptedAttemptIds = new Set(projection.providerTurns.map((turn) => turn.runAttemptId));
@@ -44,7 +38,7 @@ export function latestCountedRunFolder(projection: {
       .map((attempt) => attempt.runId),
   );
   const messages = new Map(projection.messages.map((message) => [message.id, message]));
-  const counted = projection.runs.reduce<OrchestrationV2Run | undefined>((latest, run) => {
+  return projection.runs.reduce<OrchestrationV2Run | undefined>((latest, run) => {
     const message = messages.get(run.userMessageId);
     const goal = message !== undefined && parseGoalCommand(message) !== null;
     return run.cwd !== undefined &&
@@ -55,13 +49,7 @@ export function latestCountedRunFolder(projection: {
       (latest === undefined || runRanAfter(run, latest))
       ? run
       : latest;
-  }, undefined);
-  return (
-    counted?.cwd ??
-    projection.turnItems
-      .filter((item) => item.type === "system_notice" && item.previousFolder !== undefined)
-      .toSorted((left, right) => left.ordinal - right.ordinal)[0]?.previousFolder
-  );
+  }, undefined)?.cwd;
 }
 
 export const folderChangeNote = Effect.fn("orchestrationV2.folderChangeNote")(function* (

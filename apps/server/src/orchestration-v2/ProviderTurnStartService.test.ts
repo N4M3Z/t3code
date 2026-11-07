@@ -19,6 +19,7 @@ import {
   RunId,
   ThreadId,
   ProjectId,
+  TurnItemId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -40,6 +41,7 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import { moveReceiptTurnItem } from "../project/ThreadMoveReceipt.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
@@ -1360,7 +1362,8 @@ effectIt.effect.each([
   { text: "Continue", line: true },
   { text: "/goal ship it", line: false },
   { text: "Continue", restartContinuation: true, line: false },
-])("tells the model the working folder changed: %j", ({ text, line, restartContinuation }) =>
+  { text: "Continue", moved: true, line: true },
+])("tells the model the working folder changed: %j", ({ text, line, restartContinuation, moved }) =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text,
@@ -1371,7 +1374,9 @@ effectIt.effect.each([
     harness.setProjection({
       ...projection,
       runs: [
-        { ...previous!, cwd: "/tmp/folder-a" },
+        moved
+          ? { ...previous!, cwd: "/tmp/folder-b", status: "rolled_back" }
+          : { ...previous!, cwd: "/tmp/folder-a" },
         restartContinuation ? { ...current!, restartContinuationOfRunId: previous!.id } : current!,
       ],
       attempts: [
@@ -1379,12 +1384,30 @@ effectIt.effect.each([
         { ...projection.attempts[0]!, id: previous!.activeAttemptId!, runId: previous!.id },
       ],
     });
+    if (moved) {
+      const receipts = ["/tmp/folder-a", "/tmp/folder-b"].map((previousFolder, index) =>
+        moveReceiptTurnItem({
+          id: TurnItemId.make(`move-receipt-${index}`),
+          threadId: projection.thread.id,
+          ordinal: index + 1,
+          movedAt: DateTime.makeUnsafe(0),
+          previousFolder,
+          message: "Moved.",
+        }),
+      );
+      harness.getThreadRecords.mockImplementation(() =>
+        Effect.succeed({ ...harness.projection(), turnItems: receipts }),
+      );
+    }
     harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
 
     yield* harness.start;
     const turn = harness.startRootRun.mock.calls[0]![0];
     yield* turn.session.startTurn(turn as never);
 
+    expect(
+      harness.getThreadRecords.mock.calls.some(([, fields]) => fields.includes("turnItems")),
+    ).toBe(moved === true);
     expect(harness.startTurn.mock.calls.map(([sent]) => sent.message.text)).toEqual([
       withInlineContext(
         line

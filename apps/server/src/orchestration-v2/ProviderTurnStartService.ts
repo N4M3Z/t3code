@@ -29,6 +29,7 @@ import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import { previousFolderAfter } from "../project/ThreadMoveReceipt.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
@@ -879,14 +880,14 @@ export const layer: Layer.Layer<
           ? ""
           : yield* folderChangeNote(
               fileSystem,
-              latestCountedRunFolder({
-                ...projection,
-                turnItems: (yield* projectionStore.getThreadRecords(
-                  projection.thread.id,
-                  ["turnItems"],
-                  { turnItemTypes: ["system_notice"], turnItemRunIds: [null] },
-                )).turnItems,
-              }),
+              latestCountedRunFolder(projection) ??
+                previousFolderAfter(
+                  (yield* projectionStore.getThreadRecords(projection.thread.id, ["turnItems"], {
+                    turnItemTypes: ["system_notice"],
+                    turnItemRunIds: [null],
+                  })).turnItems,
+                  0,
+                ),
               resolvedRuntimePolicy.cwd,
             );
       const tokenCap = yield* handoffTokenCapConfig.pipe(

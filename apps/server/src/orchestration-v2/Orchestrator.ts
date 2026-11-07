@@ -12352,12 +12352,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       if (command.restoreFiles !== false) {
-        const isolated = yield* isCheckpointRestoreIsolated(projection.thread, targetScope, {
-          projects,
-          path,
-          fileSystem,
-          projections: projectionStore,
-        }).pipe(
+        const isolated = yield* isCheckpointRestoreIsolated(
+          projection.thread,
+          {
+            cwd:
+              projection.runs.find((run) => run.id === targetCheckpoint.runId)?.cwd ??
+              targetScope.cwd,
+          },
+          {
+            projects,
+            path,
+            fileSystem,
+            projections: projectionStore,
+          },
+        ).pipe(
           Effect.mapError(
             (cause) =>
               new OrchestratorDispatchError({

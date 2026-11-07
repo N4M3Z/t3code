@@ -5967,17 +5967,28 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   });
 
   it.effect(
-    "applies model, effort and Fast changes to a process running a background shell, but not thinking or a cleared effort",
+    "applies model, effort and Fast changes to a process running a background shell, but not thinking, a cleared effort or a new cwd",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const harness = yield* makeWakeHarness;
+          let closes = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            close: () =>
+              Effect.sync(() => {
+                closes++;
+              }),
+          });
           const now = yield* DateTime.now;
           const normal = {
             instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
             model: "claude-opus-5-5",
           } satisfies ModelSelection;
-          const turn = (ordinal: number, modelSelection: ModelSelection) =>
+          const turn = (
+            ordinal: number,
+            modelSelection: ModelSelection,
+            cwd = CLAUDE_TEST_RUNTIME_POLICY.cwd,
+            continuation = false,
+          ) =>
             makeClaudeTestTurnInput({
               threadId: harness.threadId,
               providerThread: harness.providerThread,
@@ -5987,6 +5998,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               attachments: [],
               providerTurnOrdinal: ordinal,
               modelSelection,
+              runtimePolicy: { ...CLAUDE_TEST_RUNTIME_POLICY, cwd },
+              ...(continuation
+                ? { messageCreatedBy: "agent", messageCreationSource: "provider" }
+                : {}),
             });
           const settle = Effect.gen(function* () {
             yield* harness.offerAndWait(turnOneResult);
@@ -6025,13 +6040,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.strictEqual(harness.getOpenedOptions(), originalOptions);
           assert.lengthOf(harness.offeredMessages, 4);
 
-          for (const [ordinal, selection] of [
-            [5, CLAUDE_TEST_RESTART_MODEL_SELECTION],
-            [6, { ...normal, model: "claude-haiku-4-5-20251001" }],
-          ] as const) {
-            const refused = yield* harness.runtime
-              .startTurn(turn(ordinal, selection))
-              .pipe(Effect.result);
+          // Turns 7-9 move to a new cwd with the live selection, one that applies live, and a continuation.
+          for (const refusedTurn of [
+            turn(5, CLAUDE_TEST_RESTART_MODEL_SELECTION),
+            turn(6, { ...normal, model: "claude-haiku-4-5-20251001" }),
+            turn(7, { ...normal, model: "claude-sonnet-4-6" }, "/new-workspace"),
+            turn(8, normal, "/new-workspace"),
+            turn(9, CLAUDE_TEST_RESTART_MODEL_SELECTION, "/new-workspace", true),
+          ]) {
+            const refused = yield* harness.runtime.startTurn(refusedTurn).pipe(Effect.result);
             assert.equal(refused._tag, "Failure");
             if (refused._tag === "Failure") {
               assert.instanceOf(
@@ -6041,6 +6058,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }
           }
           assert.strictEqual(harness.getOpenedOptions(), originalOptions);
+          assert.lengthOf(harness.processQueues, 1);
+          assert.equal(closes, 0);
           assert.lengthOf(harness.offeredMessages, 4);
           assert.lengthOf(harness.liveSelectionChanges, 3);
           assert.isTrue(yield* harness.hasPendingBackgroundWork);
@@ -8267,87 +8286,122 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  it.effect("reports the settings directory of a reused Claude query", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-home-" });
-      const first = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-first-" });
-      const second = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-second-" });
-      for (const [directory, window] of [
-        [first, 150_000],
-        [second, 180_000],
-      ] as const) {
-        yield* fileSystem.makeDirectory(path.join(directory, ".claude"));
-        yield* fileSystem.writeFileString(
-          path.join(directory, ".claude", "settings.json"),
-          JSON.stringify({ autoCompactWindow: window }),
-        );
-      }
-      const harness = yield* makeWakeHarnessWithOptions({
-        settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home },
-      });
-      let firstOptions: ReturnType<typeof harness.getOpenedOptions>;
-      for (const [ordinal, cwd] of [
-        [1, first],
-        [2, second],
-      ] as const) {
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make(`attempt-compact-cwd-${ordinal}`),
-            providerTurnOrdinal: ordinal,
-            text: "Continue.",
-            attachments: [],
-            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-              ...CLAUDE_TEST_RUNTIME_POLICY,
-              cwd,
+  it.effect.each(["normal", "selection-update", "continuation"] as const)(
+    "keeps a Claude query in the same cwd and resumes it with the new cwd's settings on the %s branch",
+    (branch) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-home-" });
+        const first = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-first-" });
+        const second = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-second-" });
+        for (const [directory, window] of [
+          [first, 150_000],
+          [second, 180_000],
+        ] as const) {
+          yield* fileSystem.makeDirectory(path.join(directory, ".claude"));
+          yield* fileSystem.writeFileString(
+            path.join(directory, ".claude", "settings.json"),
+            JSON.stringify({ autoCompactWindow: window }),
+          );
+        }
+        const closedProcesses: Array<Queue.Queue<SDKMessage>> = [];
+        const harness = yield* makeWakeHarnessWithOptions({
+          settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home },
+          freshQueueOnReopen: true,
+          close: (messages) =>
+            Effect.sync(() => {
+              closedProcesses.push(messages);
+            }).pipe(Effect.andThen(Queue.shutdown(messages))),
+        });
+        let firstOptions: ReturnType<typeof harness.getOpenedOptions>;
+        for (const [ordinal, cwd] of [
+          [1, first],
+          [2, first],
+          [3, second],
+        ] as const) {
+          const continuation = branch === "continuation" && ordinal > 1;
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`attempt-compact-cwd-${ordinal}`),
+              providerTurnOrdinal: ordinal,
+              text: "Continue.",
+              attachments: [],
+              ...(continuation
+                ? {
+                    messageCreatedBy: "agent",
+                    messageCreationSource: "provider",
+                    modelSelection: CLAUDE_TEST_RESTART_MODEL_SELECTION,
+                  }
+                : branch === "selection-update" && ordinal > 1
+                  ? {
+                      modelSelection: {
+                        ...CLAUDE_TEST_MODEL_SELECTION,
+                        model: ordinal === 2 ? "claude-opus-5-5" : "claude-sonnet-4-6",
+                      },
+                    }
+                  : {}),
+              runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                ...CLAUDE_TEST_RUNTIME_POLICY,
+                cwd,
+              }),
             }),
-          }),
-        );
-        if (ordinal === 1) firstOptions = harness.getOpenedOptions();
-        else assert.strictEqual(harness.getOpenedOptions(), firstOptions);
-        yield* Queue.offer(
-          harness.sdkMessages,
-          usageSnapshotFrame(
-            `msg_cwd_${ordinal}`,
-            `00000000-0000-4000-8000-00000000080${ordinal}`,
-            {
-              ...zeroUsage,
-              input_tokens: 1_000,
-              output_tokens: 10,
-            },
+          );
+          assert.equal(harness.getOpenedOptions()?.cwd, cwd);
+          if (ordinal === 1) firstOptions = harness.getOpenedOptions();
+          else if (ordinal === 2) {
+            assert.strictEqual(harness.getOpenedOptions(), firstOptions);
+            assert.lengthOf(harness.processQueues, 1);
+            assert.isEmpty(closedProcesses);
+          } else {
+            assert.notStrictEqual(harness.getOpenedOptions(), firstOptions);
+            assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+            assert.lengthOf(harness.processQueues, 2);
+            assert.deepEqual(closedProcesses, [harness.sdkMessages]);
+          }
+          if (!continuation) {
+            yield* harness.offerAndWait(
+              usageSnapshotFrame(
+                `msg_cwd_${ordinal}`,
+                `00000000-0000-4000-8000-00000000080${ordinal}`,
+                {
+                  ...zeroUsage,
+                  input_tokens: 1_000,
+                  output_tokens: 10,
+                },
+              ),
+            );
+            yield* harness.offerAndWait(
+              makeResultFrame({
+                uuid: `00000000-0000-4000-8000-00000000081${ordinal}`,
+                result: "Done.",
+              }),
+            );
+          }
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        }
+        assert.lengthOf(harness.liveSelectionChanges, branch === "selection-update" ? 2 : 0);
+        assert.deepEqual(
+          harness.events.flatMap((event) =>
+            event.type === "provider_turn.updated" && event.providerTurn.tokenUsage
+              ? [event.providerTurn.tokenUsage.autoCompactThreshold]
+              : [],
           ),
+          branch === "continuation" ? [117_000] : [117_000, 117_000, 147_000],
         );
-        yield* Queue.offer(
-          harness.sdkMessages,
-          makeResultFrame({
-            uuid: `00000000-0000-4000-8000-00000000081${ordinal}`,
-            result: "Done.",
-          }),
-        );
-        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
-      }
-      assert.deepEqual(
-        harness.events.flatMap((event) =>
-          event.type === "provider_turn.updated" && event.providerTurn.tokenUsage
-            ? [event.providerTurn.tokenUsage.autoCompactThreshold]
-            : [],
-        ),
-        [117_000, 117_000],
-      );
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
-    ),
   );
 
   it.effect("shows a hook-dropped Claude prompt once and skips info-level lines", () =>
@@ -12252,58 +12306,172 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect("starts the wake run when Claude opens the wake turn, before its output", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
-        const now = yield* DateTime.now;
+  it.effect.each([CLAUDE_TEST_RUNTIME_POLICY.cwd, "/new-workspace"])(
+    "starts the wake run in the live process when Claude opens the wake turn, before its output, in %s",
+    (cwd) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
 
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-wake-init-1"),
-            text: "Run the build in the background.",
-            attachments: [],
-          }),
-        );
-        yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
-        yield* Queue.offer(harness.sdkMessages, turnOneResult);
-        yield* harness.awaitTerminal(1);
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-wake-init-1"),
+              text: "Run the build in the background.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.awaitTerminal(1);
 
-        yield* harness.offerAndWait(wakeNotification);
-        assert.lengthOf(harness.continuationRequests, 0);
-        yield* harness.offerAndWait(wakeTurnInit);
-        assert.lengthOf(harness.continuationRequests, 1);
-        assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
+          yield* harness.offerAndWait(wakeNotification);
+          assert.lengthOf(harness.continuationRequests, 0);
+          yield* harness.offerAndWait(wakeTurnInit);
+          assert.lengthOf(harness.continuationRequests, 1);
+          assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
 
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-wake-init-2"),
-            text: "Background task completed.",
-            attachments: [],
-            providerTurnOrdinal: 2,
-            messageCreatedBy: "agent",
-            messageCreationSource: "provider",
-          }),
-        );
-        assert.lengthOf(harness.terminalEvents(), 1);
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-wake-init-2"),
+              text: "Background task completed.",
+              attachments: [],
+              providerTurnOrdinal: 2,
+              messageCreatedBy: "agent",
+              messageCreationSource: "provider",
+              runtimePolicy: { ...CLAUDE_TEST_RUNTIME_POLICY, cwd },
+            }),
+          );
+          assert.lengthOf(harness.processQueues, 1);
+          assert.lengthOf(harness.terminalEvents(), 1);
 
-        yield* harness.offerAndWait(wakeAssistant);
-        yield* harness.offerAndWait(wakeResult);
-        yield* harness.awaitTerminal(2);
-        assert.equal(harness.terminalEvents()[1]?.status, "completed");
-        assert.lengthOf(harness.continuationRequests, 1);
-        assert.isTrue(
-          harness.events.some(
-            (event) => event.type === "message.updated" && event.message.text === WAKE_RESULT_TEXT,
+          yield* harness.offerAndWait(wakeAssistant);
+          yield* harness.offerAndWait(wakeResult);
+          yield* harness.awaitTerminal(2);
+          assert.equal(harness.terminalEvents()[1]?.status, "completed");
+          assert.lengthOf(harness.continuationRequests, 1);
+          assert.isTrue(
+            harness.events.some(
+              (event) =>
+                event.type === "message.updated" && event.message.text === WAKE_RESULT_TEXT,
+            ),
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
+        ),
+      ),
+  );
+
+  it.effect.each(["background work", "a missing append-system-prompt file"] as const)(
+    "requests a new continuation after one in a new cwd is refused for %s",
+    (cause) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const first = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-first-" });
+        const second = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-second-" });
+        yield* fileSystem.writeFileString(path.join(first, "prompt.md"), "Prompt sentinel\n");
+        const harness = yield* makeWakeHarnessWithOptions(
+          cause === "background work"
+            ? undefined
+            : {
+                settings: {
+                  ...DEFAULT_CLAUDE_SETTINGS,
+                  launchArgs: "--append-system-prompt-file prompt.md",
+                },
+              },
         );
+        const now = yield* DateTime.now;
+        const turn = (ordinal: number, cwd: string, continuation: boolean) =>
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make(`attempt-refused-continuation-${ordinal}`),
+            text: continuation ? "Background task completed." : "Run the builds in the background.",
+            attachments: [],
+            providerTurnOrdinal: ordinal,
+            runtimePolicy: { ...CLAUDE_TEST_RUNTIME_POLICY, cwd },
+            ...(continuation
+              ? { messageCreatedBy: "agent", messageCreationSource: "provider" }
+              : {}),
+          });
+        const secondTask = {
+          task_id: "bsecondtask",
+          tool_use_id: "toolu_second_background_task",
+          session_id: WAKE_NATIVE_SESSION,
+        };
+
+        yield* harness.runtime.startTurn(turn(1, first, false));
+        yield* harness.offerAndWait(wakeTaskStarted);
+        if (cause === "background work") {
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...secondTask,
+              type: "system",
+              subtype: "task_started",
+              description: "Second background build",
+              is_backgrounded: true,
+              task_type: "local_bash",
+              uuid: "00000000-0000-4000-8000-00000000c101",
+            }),
+          );
+        }
+        yield* harness.offerAndWait(turnOneResult);
+        yield* Queue.take(harness.terminalReceipts);
+        for (const frame of [wakeNotification, wakeTurnInit, wakeAssistant, wakeResult]) {
+          yield* harness.offerAndWait(frame);
+        }
+        assert.lengthOf(harness.continuationRequests, 1);
+
+        const refused = yield* harness.runtime.startTurn(turn(2, second, true)).pipe(Effect.flip);
+        if (cause === "background work") {
+          assert.instanceOf(
+            refused.cause,
+            ClaudeAdapterV2.ClaudeBackgroundWorkBlocksQueryReplacementError,
+          );
+        } else {
+          assert.instanceOf(refused.cause, ClaudeAdapterV2.ClaudeAppendSystemPromptFileError);
+        }
+        assert.lengthOf(harness.processQueues, 1);
+
+        if (cause === "background work") {
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...secondTask,
+              type: "system",
+              subtype: "task_notification",
+              status: "completed",
+              output_file: "/tmp/claude-replay/tasks/bsecondtask.output",
+              summary: "Second background build completed",
+              uuid: "00000000-0000-4000-8000-00000000c102",
+            }),
+          );
+        }
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "init",
+            uuid: "00000000-0000-4000-8000-00000000c103",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        assert.lengthOf(harness.continuationRequests, 2);
       }).pipe(
+        Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
             IdAllocator.layer,
@@ -12313,7 +12481,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
-    ),
   );
 
   it.effect.each([true, false])(

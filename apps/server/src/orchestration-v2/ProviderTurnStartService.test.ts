@@ -36,6 +36,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -1476,6 +1477,62 @@ effectIt.effect("waits for the parent's Claude relocation before reading its sto
     );
     expect(harness.readEvents).not.toHaveBeenCalled();
   }),
+);
+
+effectIt.effect("forks a Codex parent without waiting for a Claude relocation on its thread", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "What is the main thread doing?",
+      sideChat: {
+        contextRun: "current",
+        nativeForkFrom: "idle",
+        relocation: yield* Deferred.make<void>(),
+      },
+    });
+
+    const start = yield* Effect.forkChild(harness.start);
+    yield* Effect.race(Deferred.await(harness.relocationAwaited), Fiber.await(start));
+    expect(harness.forkThread).toHaveBeenCalledOnce();
+  }),
+);
+
+effectIt.effect.each([true, false])(
+  "fails a fork whose parent's Claude session is still moving only on the last attempt: willRetry %s",
+  (willRetry) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "What is the main thread doing?",
+        driver: ProviderDriverKind.make("claudeAgent"),
+        sideChat: {
+          contextRun: "current",
+          nativeForkFrom: "idle",
+          relocation: yield* Deferred.make<void>(),
+        },
+      });
+
+      const start = yield* Effect.forkChild(
+        Effect.exit(willRetry ? harness.startWithRetry : harness.start),
+      );
+      yield* Deferred.await(harness.relocationAwaited);
+      yield* TestClock.adjust("30 seconds");
+
+      expect((yield* Fiber.join(start))._tag).toBe(willRetry ? "Failure" : "Success");
+      expect(harness.forkThread).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe(willRetry ? "starting" : "failed");
+      expect(harness.projection().turnItems).toMatchObject(
+        willRetry
+          ? []
+          : [
+              {
+                type: "error",
+                failure: {
+                  message:
+                    "The source thread's Claude session is still being moved. Try again in a moment.",
+                },
+              },
+            ],
+      );
+    }),
 );
 
 effectIt.effect.each([

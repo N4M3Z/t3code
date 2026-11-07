@@ -1163,24 +1163,32 @@ export const layer: Layer.Layer<
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           // A move relocates the source's Claude transcript before its row records the new folder.
-          yield* Effect.forEach(
-            yield* outbox.unsettledEffectIds({
-              threadId: nativeForkTransfer.sourceThreadId,
-              effectType: "provider-session.relocate-storage",
-            }),
-            outbox.awaitSettled,
-            { discard: true },
-          ).pipe(
-            Effect.timeoutOrElse({
-              duration: "30 seconds",
-              orElse: () =>
-                new ProviderTurnStartError({
-                  runId,
-                  cause:
-                    "The source thread's Claude session is still being moved. Try again in a moment.",
+          const relocating =
+            session.driver === "claudeAgent" &&
+            Option.isNone(
+              yield* Effect.forEach(
+                yield* outbox.unsettledEffectIds({
+                  threadId: nativeForkTransfer.sourceThreadId,
+                  effectType: "provider-session.relocate-storage",
                 }),
-            }),
-          );
+                outbox.awaitSettled,
+                { discard: true },
+              ).pipe(Effect.timeoutOption("30 seconds")),
+            );
+          if (relocating) {
+            const error = new ProviderTurnStartError({
+              runId,
+              cause:
+                "The source thread's Claude session is still being moved. Try again in a moment.",
+            });
+            if (input.willRetry === true) return yield* error;
+            yield* settleStartFailure({
+              signal: "provider-thread-load-failure",
+              title: "Provider turn failed to start",
+              error,
+            });
+            return undefined;
+          }
           const sourceProjection = yield* projectionStore.getThreadRecords(
             nativeForkTransfer.sourceThreadId,
             ["runs", "providerThreads", "attempts", "providerTurns"],

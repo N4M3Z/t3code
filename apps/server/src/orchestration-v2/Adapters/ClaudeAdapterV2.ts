@@ -4397,6 +4397,7 @@ interface ActiveClaudeTurnContext {
   readonly promptUuid: string | null;
   promptEcho: "pending" | "confirmed";
   promptStarted: boolean;
+  accepted: boolean;
   nativeWakeStarted: boolean;
   gatedFramesBeforeEcho: number;
   readonly heldRootFrames: Array<SDKMessage>;
@@ -8169,7 +8170,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     },
                   ),
                 },
-              }),
+              }).pipe(Effect.when(Effect.succeed(input.context.accepted))),
               // Emit the roster before root settlement so writeFinalRunEvents preserves it.
               Effect.gen(function* () {
                 const nativeThreadId =
@@ -11325,6 +11326,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               promptUuid,
               promptEcho: isClaudeProviderContinuationTurn(turnInput) ? "confirmed" : "pending",
               promptStarted: false,
+              accepted: userMessage === null,
               nativeWakeStarted: false,
               gatedFramesBeforeEcho: 0,
               heldRootFrames: [],
@@ -11378,11 +11380,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
               }
             });
-            // The folder-change notice counts a run by this record, so a rejected prompt gets none.
-            const recordRunningTurn = emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CLAUDE_PROVIDER,
-              providerTurn: providerTurnPayload({ context, status: "running", completedAt: null }),
+            const recordRunningTurn = Effect.gen(function* () {
+              if ((yield* Ref.get(activeTurn)) !== context) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "Claude provider query ended before the turn could start.",
+                });
+              }
+              yield* emitProviderEvent({
+                type: "provider_turn.updated",
+                driver: CLAUDE_PROVIDER,
+                providerTurn: providerTurnPayload({
+                  context,
+                  status: "running",
+                  completedAt: null,
+                }),
+              });
             });
             if (userMessage !== null) {
               yield* attachTurn;
@@ -11390,15 +11403,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               yield* Effect.uninterruptibleMask((restore) =>
                 restore(
                   querySession.query.offer(userMessage, () => {
+                    context.accepted = true;
                     pdfReservation.commit();
                   }),
                 ).pipe(
                   Effect.tap(() =>
                     Effect.sync(() => {
+                      context.accepted = true;
                       pdfReservation.commit();
                     }),
                   ),
                   Effect.andThen(recordRunningTurn),
+                  Effect.onError(() =>
+                    context.accepted
+                      ? recordRunningTurn.pipe(Effect.ignore)
+                      : Ref.update(activeTurn, (current) => (current === context ? null : current)),
+                  ),
                 ),
               );
               return;

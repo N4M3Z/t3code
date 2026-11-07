@@ -2,10 +2,12 @@ import type { ServerProvider, ThreadId } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
+import * as Arr from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
@@ -18,11 +20,17 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 
 class ClaudeSessionRelocationError extends Schema.TaggedError<ClaudeSessionRelocationError>()(
   "ClaudeSessionRelocationError",
-  { reason: Schema.Literals(["relative-config-dir", "provider-thread-changed"]) },
+  {
+    reason: Schema.Literals(["relative-config-dir", "provider-thread-changed", "foreign-session"]),
+    path: Schema.optional(Schema.String),
+  },
 ) {}
 
 const FOLDER_MOVE_MIN_VERSION = "2.1.223";
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeSessionRecord = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ sessionId: Schema.String })),
+);
 
 export function claudeFolderMoveVersionRefusal(
   snapshot: Pick<ServerProvider, "version"> | undefined,
@@ -69,9 +77,6 @@ export function claudeProjectDirName(folder: string, environment: NodeJS.Process
   }
   return `${name.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
 }
-
-const errnoCode = (error: PlatformError.PlatformError) =>
-  (error.cause as NodeJS.ErrnoException | undefined)?.code;
 
 // Claude Code 2.1.319's relocateSessionTranscript; the SDK has no relocation call.
 export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.relocateTranscript")(
@@ -129,7 +134,7 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
       fileSystem.rename(from, to).pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
-            const code = errnoCode(error);
+            const code = (error.cause as NodeJS.ErrnoException | undefined)?.code;
             if (code === "EEXIST" || code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY") {
               const aside = yield* setAside(to).pipe(Effect.orElseSucceed(() => undefined));
               return yield* fileSystem
@@ -140,7 +145,7 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
             yield* fileSystem.copyFile(from, to).pipe(
               Effect.catch((copyError) =>
                 Effect.gen(function* () {
-                  const copyCode = errnoCode(copyError);
+                  const copyCode = (copyError.cause as NodeJS.ErrnoException | undefined)?.code;
                   if (copyCode !== "EISDIR" && copyCode !== "ENOTSUP" && copyCode !== "EPERM") {
                     return yield* copyError;
                   }
@@ -187,6 +192,12 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
         Effect.tapError(() => restore(superseded, newFile)),
       );
     }
+    const contents = yield* fileSystem.readFileString(newFile);
+    // Only this session's transcript proves a lost move; as in the SDK, its first sessionId names it.
+    const owner = Arr.findFirst(contents.split("\n"), (line) => decodeSessionRecord(line));
+    if (!sourcePresent && Option.getOrUndefined(owner)?.sessionId !== input.sessionId) {
+      return yield* new ClaudeSessionRelocationError({ reason: "foreign-session", path: newFile });
+    }
     if (oldDir !== newDir) {
       yield* renameWithFallbacks(
         path.join(oldDir, input.sessionId),
@@ -196,16 +207,17 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
           (error) => error.reason._tag === "NotFound",
           () => Effect.void,
         ),
-        Effect.catch((cause) =>
+        Effect.tapError((cause) =>
           Effect.logWarning("orchestration-v2.claude-relocation.subagent-folder-failed", { cause }),
         ),
       );
     }
-    if (moving || !(yield* fileSystem.readFileString(newFile)).endsWith(record)) {
+    // Like Claude, end a torn last line before appending; only a whole last line counts as the record.
+    if (!`\n${contents}`.endsWith(`\n${record}`)) {
       yield* fileSystem
-        .writeFileString(newFile, record, { flag: "a" })
+        .writeFileString(newFile, `${/[^\n]$/.test(contents) ? "\n" : ""}${record}`, { flag: "a" })
         .pipe(
-          Effect.catch((cause) =>
+          Effect.tapError((cause) =>
             Effect.logWarning("orchestration-v2.claude-relocation.record-failed", { cause }),
           ),
         );

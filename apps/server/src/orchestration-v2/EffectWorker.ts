@@ -594,12 +594,15 @@ export const layerExecutor: Layer.Layer<
               ),
             );
           case "scheduled-tasks.move":
-            return Effect.fail(
-              new OrchestrationEffectExecutionError({
-                effectId: effect.id,
-                effectType: effect.request.type,
-                cause: "No handler yet.",
-              }),
+            return resourceCleanup.moveScheduledTasks(effect.request).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
             );
         }
       }),

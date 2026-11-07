@@ -411,6 +411,10 @@ export interface OrchestratorV2Shape {
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) => Effect.Effect<ProjectionRecords<K>, OrchestratorV2Error>;
+  /** Whether a live session of the thread reports background work; a failed probe counts. */
+  readonly threadHasBackgroundWork: (
+    threadId: ThreadId,
+  ) => Effect.Effect<boolean, OrchestratorV2Error>;
   readonly listAppOwnedChildThreadIds: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, OrchestratorV2Error>;
@@ -14459,6 +14463,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return projectionStore
           .getThreadRecords(threadId, fields, filter)
           .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      },
+    ),
+    threadHasBackgroundWork: Effect.fn("OrchestratorV2.threadHasBackgroundWork")(
+      function* (threadId) {
+        const records = yield* projectionStore
+          .getThreadRecords(threadId, ["providerSessions", "providerThreads"])
+          .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+        for (const session of records.providerSessions) {
+          if (yield* sessionHasBackgroundWork(session, records.providerThreads)) return true;
+        }
+        return false;
       },
     ),
     listAppOwnedChildThreadIds: Effect.fn("OrchestratorV2.listAppOwnedChildThreadIds")(

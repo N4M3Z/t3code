@@ -6,6 +6,7 @@ import {
   CheckpointScopeId,
   CommandId,
   NodeId,
+  ProjectId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -29,6 +30,7 @@ import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -396,6 +398,82 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
     assert.equal(retry.workerId, workerId);
     assert.equal(retry.delayMs, 0);
     assert.include(retry.error, "simulated cancellation-state read failure");
+  }),
+);
+
+it.effect("retries a scheduled-task move that fails once and settles it on the next attempt", () =>
+  Effect.gen(function* () {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    const effectId = "effect:worker-scheduled-tasks-move";
+    const workerId = "worker-scheduled-tasks-move";
+    const request = {
+      type: "scheduled-tasks.move" as const,
+      threadIds: [threadId],
+      projectId: ProjectId.make("project:worker-scheduled-tasks-move"),
+    };
+    const claims = yield* Ref.make(0);
+    const retries = yield* Ref.make<ReadonlyArray<number>>([]);
+    const settled = yield* Ref.make(0);
+    const moves = yield* Ref.make(0);
+    const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+      claimNext: () =>
+        Ref.updateAndGet(claims, (count) => count + 1).pipe(
+          Effect.map((attemptCount) =>
+            Option.some<EffectOutbox.OrchestrationEffectV2>({
+              id: effectId,
+              commandId: CommandId.make("command:worker-scheduled-tasks-move"),
+              threadId,
+              request,
+              status: "running",
+              attemptCount,
+              availableAt: now,
+              leaseOwner: workerId,
+              createdAt: now,
+              updatedAt: now,
+              completedAt: null,
+              lastError: null,
+            }),
+          ),
+        ),
+      awaitCancellation: () => Effect.never,
+      get: () => Effect.succeedNone,
+      clearCancellation: () => Effect.void,
+      retry: (input) =>
+        Ref.update(retries, (existing) => [...existing, input.delayMs]).pipe(Effect.as(true)),
+      succeed: () => Ref.update(settled, (count) => count + 1).pipe(Effect.as(true)),
+    });
+    const layerCleanup = Layer.succeed(ResourceCleanupService.ResourceCleanupService, {
+      cleanupScheduledTasks: () => Effect.void,
+      cleanupTerminals: () => Effect.void,
+      cleanupPreviews: () => Effect.void,
+      cleanupAttachments: () => Effect.void,
+      moveScheduledTasks: (input) =>
+        Ref.updateAndGet(moves, (count) => count + 1).pipe(
+          Effect.flatMap((count) =>
+            count === 1
+              ? new ResourceCleanupService.ResourceCleanupError({
+                  operation: "scheduled-tasks",
+                  cause: `store unavailable for ${input.threadIds.length} thread(s)`,
+                })
+              : Effect.void,
+          ),
+        ),
+    });
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layerWorker = EffectWorker.layerWithOptions({ workerId }).pipe(
+      Layer.provide(
+        Layer.merge(layerOutbox, layerExecutorFor({ events }).pipe(Layer.provide(layerCleanup))),
+      ),
+    );
+
+    yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+      Effect.flatMap((worker) => worker.runOnce.pipe(Effect.andThen(worker.runOnce))),
+      Effect.provide(layerWorker),
+    );
+
+    assert.equal(yield* Ref.get(moves), 2);
+    assert.deepEqual(yield* Ref.get(retries), [100]);
+    assert.equal(yield* Ref.get(settled), 1);
   }),
 );
 

@@ -146,6 +146,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-thread.rollback",
   "checkpoint.capture",
   "scheduled-tasks.cleanup",
+  "scheduled-tasks.move",
   "terminal.cleanup",
   "preview.cleanup",
   "attachment.cleanup",

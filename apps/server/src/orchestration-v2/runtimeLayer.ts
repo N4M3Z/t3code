@@ -382,7 +382,18 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
   layerScratchThreadPromotionProvided,
-  ThreadMoveService.layer,
+  ThreadMoveService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerProjectService,
+        layerManagedProjectFoldersProvided,
+        layerThreadManagementProvided,
+        layerEventSink,
+        IdAllocator.layer,
+        ProjectionStore.layer,
+      ),
+    ),
+  ),
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(
     Layer.provide(Layer.merge(layerOrchestratorProvided, layerCommandOutputHubProvided)),

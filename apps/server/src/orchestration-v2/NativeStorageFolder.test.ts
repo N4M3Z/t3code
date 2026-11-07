@@ -1,10 +1,21 @@
-import { ProviderDriverKind, ProviderThreadId, RunId } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { it as effectIt } from "@effect/vitest";
+import {
+  ProviderDriverKind,
+  ProviderThreadId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2ProviderThread,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { nativeStorageFolder } from "./NativeStorageFolder.ts";
+import type * as EventStore from "./EventStore.ts";
+import { nativeStorageFolder, nativeStorageFolders } from "./NativeStorageFolder.ts";
 
 const row = ProviderThreadId.make("provider-thread:claude");
 const otherRow = ProviderThreadId.make("provider-thread:other");
+const codexRow = ProviderThreadId.make("provider-thread:codex");
 
 const run = (ordinal: number, cwd?: string) => ({
   id: RunId.make(`run:${ordinal}`),
@@ -34,6 +45,16 @@ const providerThread = (nativeId: string, recorded?: string) => ({
 });
 
 const runs = [run(4, "/repo/d"), run(1), run(3, "/repo/b"), run(2)];
+const checkpointScopes = [
+  rootScope(4, "/repo/d"),
+  // Run 3 was queued in another folder; its cwd says where it ran.
+  rootScope(3, "/repo/queued"),
+  rootScope(2, "/repo/a"),
+  // Run 1 was queued in another folder, then scoped again where it ran.
+  rootScope(1, "/repo/other-queued", otherRow),
+  rootScope(1, "/repo/other", otherRow),
+  { kind: "subagent" as const, runId: RunId.make("run:1"), providerThreadId: row, cwd: "/repo/x" },
+];
 
 describe("nativeStorageFolder", () => {
   it.each([
@@ -75,24 +96,51 @@ describe("nativeStorageFolder", () => {
       expected: undefined,
     },
   ])("$name", ({ providerThread, attempts, expected }) => {
-    expect(
-      nativeStorageFolder({
-        providerThread,
-        runs,
-        attempts,
-        checkpointScopes: [
-          rootScope(4, "/repo/d"),
-          // Run 3 was queued in another folder; its cwd says where it ran.
-          rootScope(3, "/repo/queued"),
-          rootScope(2, "/repo/a"),
-          // Run 1 was queued in another folder, then scoped again where it ran.
-          rootScope(1, "/repo/other-queued", otherRow),
-          rootScope(1, "/repo/other", otherRow),
-          { kind: "subagent", runId: RunId.make("run:1"), providerThreadId: row, cwd: "/repo/x" },
-        ],
-      }),
-    ).toBe(expected);
+    expect(nativeStorageFolder({ providerThread, runs, attempts, checkpointScopes })).toBe(
+      expected,
+    );
   });
+
+  effectIt.effect(
+    "reads a thread's scope events once, for the Claude rows its runs leave undecided",
+    () =>
+      Effect.gen(function* () {
+        const read = vi.fn<EventStore.EventStoreV2Shape["read"]>(() =>
+          Stream.fromIterable(
+            checkpointScopes.map(
+              (payload) => ({ event: { type: "checkpoint-scope.created", payload } }) as never,
+            ),
+          ),
+        );
+        const claudeRow = (nativeId: string, id = row, recorded?: string) =>
+          ({
+            ...providerThread(nativeId, recorded),
+            id,
+            driver: "claudeAgent",
+          }) as OrchestrationV2ProviderThread;
+        const threadId = ThreadId.make("thread");
+        const history = { runs, attempts: [attempt(2), attempt(3)] };
+        const recorded = yield* nativeStorageFolders({ read }, threadId, {
+          ...history,
+          providerThreads: [claudeRow("session-b", row, "/repo/b")],
+        });
+        expect([...recorded]).toEqual([[row, "/repo/b"]]);
+        expect(read).not.toHaveBeenCalled();
+        const fromScopes = yield* nativeStorageFolders({ read }, threadId, {
+          ...history,
+          providerThreads: [
+            claudeRow("session-a"),
+            claudeRow("session-a", otherRow),
+            { ...claudeRow("session-a", codexRow), driver: ProviderDriverKind.make("codex") },
+          ],
+        });
+        expect([...fromScopes]).toEqual([
+          [row, "/repo/a"],
+          [otherRow, "/repo/other"],
+        ]);
+        expect(read).toHaveBeenCalledTimes(1);
+      }),
+  );
 
   it("leaves the folder to the caller when the thread has no runs", () => {
     expect(

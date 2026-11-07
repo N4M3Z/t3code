@@ -11377,15 +11377,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   },
                 });
               }
-              yield* emitProviderEvent({
-                type: "provider_turn.updated",
-                driver: CLAUDE_PROVIDER,
-                providerTurn: providerTurnPayload({
-                  context,
-                  status: "running",
-                  completedAt: null,
-                }),
-              });
+            });
+            // The folder-change notice counts a run by this record, so a rejected prompt gets none.
+            const recordRunningTurn = emitProviderEvent({
+              type: "provider_turn.updated",
+              driver: CLAUDE_PROVIDER,
+              providerTurn: providerTurnPayload({ context, status: "running", completedAt: null }),
             });
             if (userMessage !== null) {
               yield* attachTurn;
@@ -11401,6 +11398,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       pdfReservation.commit();
                     }),
                   ),
+                  Effect.andThen(recordRunningTurn),
                 ),
               );
               return;
@@ -11418,6 +11416,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   });
                 }
                 yield* attachTurn;
+                yield* recordRunningTurn;
                 const drained = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
                 yield* releaseContinuationRequest(nativeThreadId);
                 const wakeAbsorbed = (yield* Ref.get(absorbedWakes)).has(nativeThreadId);

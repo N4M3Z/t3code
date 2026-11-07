@@ -2,7 +2,6 @@ import {
   CommandId,
   ProjectId,
   type ProviderInstanceId,
-  type ProviderThreadId,
   type ThreadId,
   ThreadMoveError,
   type ThreadMoveInput,
@@ -18,7 +17,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Stream from "effect/Stream";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- rmdir removes an empty folder only; FileSystem.remove needs recursive for any folder.
 import * as NodeFS from "node:fs";
 
@@ -26,7 +24,7 @@ import * as ServerConfig from "../config.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
-import { nativeStorageFolder } from "../orchestration-v2/NativeStorageFolder.ts";
+import { nativeStorageFolders } from "../orchestration-v2/NativeStorageFolder.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -275,26 +273,9 @@ export const make = Effect.gen(function* () {
             { turnItemTypes: [] },
           )
           .pipe(Effect.mapError(unreadable));
-        const scopes = yield* Effect.cached(
-          eventStore.read({ threadId: member.id, eventType: "checkpoint-scope.created" }).pipe(
-            Stream.runCollect,
-            Effect.map((events) =>
-              Array.from(events).flatMap(({ event }) =>
-                event.type === "checkpoint-scope.created" ? [event.payload] : [],
-              ),
-            ),
-            Effect.mapError(unreadable),
-          ),
+        const storageFolders = yield* nativeStorageFolders(eventStore, member.id, projection).pipe(
+          Effect.mapError(unreadable),
         );
-        const storageFolders = new Map<ProviderThreadId, string>();
-        for (const providerThread of projection.providerThreads) {
-          if (providerThread.driver !== "claudeAgent") continue;
-          const history = { providerThread, runs: projection.runs, attempts: projection.attempts };
-          const folder =
-            nativeStorageFolder({ ...history, checkpointScopes: [] }) ??
-            nativeStorageFolder({ ...history, checkpointScopes: yield* scopes });
-          if (folder !== undefined) storageFolders.set(providerThread.id, folder);
-        }
         members.push({
           projection,
           previousFolder: folderOf(member),

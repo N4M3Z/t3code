@@ -24,7 +24,6 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -35,12 +34,13 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import { findRepositoryRoot } from "../provider/Drivers/ClaudeSkills.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
-import { nativeStorageFolder } from "./NativeStorageFolder.ts";
+import { nativeStorageFolders } from "./NativeStorageFolder.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -137,6 +137,7 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | EventStore.EventStoreV2
   | ContextHandoffService.ContextHandoffServiceV2
@@ -155,6 +156,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
     const eventSink = yield* EventSink.EventSinkV2;
     const eventStore = yield* EventStore.EventStoreV2;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
@@ -235,36 +237,24 @@ export const layer: Layer.Layer<
     );
 
     const readNativeStorageFolder = Effect.fn("ProviderTurnStartService.readNativeStorageFolder")(
-      function* (input: {
-        readonly threadId: ThreadId;
-        readonly providerThread: Parameters<typeof nativeStorageFolder>[0]["providerThread"];
-      }) {
-        const { runs, attempts } = yield* projectionStore.getThreadRecords(input.threadId, [
-          "runs",
-          "attempts",
-        ]);
-        const history = { providerThread: input.providerThread, runs, attempts };
-        const fromRuns = nativeStorageFolder({ ...history, checkpointScopes: [] });
-        if (fromRuns !== undefined) return fromRuns;
-        const scopeEvents = yield* eventStore
-          .read({ threadId: input.threadId, eventType: "checkpoint-scope.created" })
-          .pipe(Stream.runCollect);
-        return nativeStorageFolder({
+      function* (
+        threadId: ThreadId,
+        providerThread: OrchestrationV2ProviderThread,
+        history: Pick<Parameters<typeof nativeStorageFolders>[2], "runs" | "attempts">,
+      ) {
+        const folders = yield* nativeStorageFolders(eventStore, threadId, {
           ...history,
-          checkpointScopes: Array.from(scopeEvents).flatMap(({ event }) =>
-            event.type === "checkpoint-scope.created" ? [event.payload] : [],
-          ),
-        });
-      },
-      (effect, input) =>
-        effect.pipe(
+          providerThreads: [providerThread],
+        }).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("orchestration-v2.native-storage-folder-read-failed", {
-              threadId: input.threadId,
+              threadId,
               cause,
             }).pipe(Effect.as(undefined)),
           ),
-        ),
+        );
+        return folders?.get(providerThread.id);
+      },
     );
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
@@ -1172,6 +1162,25 @@ export const layer: Layer.Layer<
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
+          // A move relocates the source's Claude transcript before its row records the new folder.
+          yield* Effect.forEach(
+            yield* outbox.unsettledEffectIds({
+              threadId: nativeForkTransfer.sourceThreadId,
+              effectType: "provider-session.relocate-storage",
+            }),
+            outbox.awaitSettled,
+            { discard: true },
+          ).pipe(
+            Effect.timeoutOrElse({
+              duration: "30 seconds",
+              orElse: () =>
+                new ProviderTurnStartError({
+                  runId,
+                  cause:
+                    "The source thread's Claude session is still being moved. Try again in a moment.",
+                }),
+            }),
+          );
           const sourceProjection = yield* projectionStore.getThreadRecords(
             nativeForkTransfer.sourceThreadId,
             ["runs", "providerThreads", "attempts", "providerTurns"],
@@ -1213,14 +1222,11 @@ export const layer: Layer.Layer<
                 )
                 .map((attempt) => attempt.id),
             );
-            const sourceNativeStorageFolder =
-              session.driver === "claudeAgent" &&
-              sourceProviderThread.nativeStorageFolder === undefined
-                ? yield* readNativeStorageFolder({
-                    threadId: nativeForkTransfer.sourceThreadId,
-                    providerThread: sourceProviderThread,
-                  })
-                : undefined;
+            const sourceNativeStorageFolder = yield* readNativeStorageFolder(
+              nativeForkTransfer.sourceThreadId,
+              sourceProviderThread,
+              sourceProjection,
+            );
             return yield* loadFromProvider(
               session.forkThread({
                 sourceProviderThread,
@@ -1805,13 +1811,7 @@ export const layer: Layer.Layer<
         ...(runningProviderThread.nativeStorageFolder === undefined
           ? {
               readNativeStorageFolder: yield* Effect.cached(
-                readNativeStorageFolder({
-                  threadId: projection.thread.id,
-                  providerThread: {
-                    id: runningProviderThread.id,
-                    nativeThreadRef: runningProviderThread.nativeThreadRef,
-                  },
-                }),
+                readNativeStorageFolder(projection.thread.id, runningProviderThread, projection),
               ),
             }
           : {}),

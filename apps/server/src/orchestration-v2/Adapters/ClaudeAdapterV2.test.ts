@@ -2440,11 +2440,7 @@ describe("ClaudeAdapterV2 attachments", () => {
 });
 
 describe("ClaudeAdapterV2 native fork", () => {
-  it.effect.each([
-    { storage: "the current folder", dir: "/workspace" },
-    { storage: "its record", recorded: "/repo/a", history: "/repo/h", dir: "/repo/a" },
-    { storage: "run history", history: "/repo/h", dir: "/repo/h" },
-  ])("forks at the source cursor in $storage and resumes the fork", ({ recorded, history, dir }) =>
+  it.effect("forks at the source cursor in the current folder and resumes the fork", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -2524,8 +2520,7 @@ describe("ClaudeAdapterV2 native fork", () => {
         const now = yield* DateTime.now;
         const providerTurnId = ProviderTurnId.make("provider-turn-claude-source");
         const forkedProviderThread = yield* runtime.forkThread({
-          sourceProviderThread: { ...sourceProviderThread, nativeStorageFolder: recorded },
-          ...(history === undefined ? {} : { sourceNativeStorageFolder: history }),
+          sourceProviderThread,
           sourceProviderTurns: [
             {
               id: providerTurnId,
@@ -2551,7 +2546,7 @@ describe("ClaudeAdapterV2 native fork", () => {
           {
             sessionId: "source-native-session",
             options: {
-              dir,
+              dir: "/workspace",
               upToMessageId: "assistant-message-cursor",
             },
             environment: { CLAUDE_CONFIG_DIR: "/custom/claude-home" },
@@ -2562,7 +2557,7 @@ describe("ClaudeAdapterV2 native fork", () => {
         assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, "forked-native-session");
         assert.equal(forkedProviderThread.forkedFrom?.providerThreadId, sourceProviderThread.id);
         assert.equal(forkedProviderThread.forkedFrom?.providerTurnId, providerTurnId);
-        assert.equal(forkedProviderThread.nativeStorageFolder, dir);
+        assert.equal(forkedProviderThread.nativeStorageFolder, "/workspace");
 
         yield* runtime.startTurn({
           appThread: {
@@ -2636,7 +2631,7 @@ describe("ClaudeAdapterV2 native fork", () => {
   );
 
   it.effect.each([
-    { name: "its record", recorded: "/repo/a" },
+    { name: "its record", recorded: "/repo/a", history: "/repo/h" },
     { name: "run history", history: "/repo/a" },
   ])("forks a session created in the old root, found from $name", ({ recorded, history }) =>
     Effect.scoped(
@@ -3005,7 +3000,6 @@ describe("ClaudeAdapterV2 native session identity", () => {
               recordedFolders.push(folder);
             }),
         });
-        // The open publishes the folder before the turn's first update.
         const firstUpdate = yield* runtime.events.pipe(
           Stream.filter(
             (event) =>
@@ -3300,6 +3294,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly onUsageLimits?: ClaudeAdapterV2.ClaudeAdapterV2Options["onUsageLimits"];
+    readonly rejectOfferAt?: number;
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -3431,9 +3426,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               return {
                 messages,
                 offer: (message) =>
-                  Effect.sync(() => {
-                    offeredMessages.push(message);
-                  }).pipe(Effect.andThen(changes.notify)),
+                  offeredMessages.length === options?.rejectOfferAt
+                    ? Effect.fail(
+                        new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                          method: "offer",
+                          cause: "rejected offer",
+                        }),
+                      )
+                    : Effect.sync(() => {
+                        offeredMessages.push(message);
+                      }).pipe(Effect.andThen(changes.notify)),
                 setModel: (model) =>
                   Effect.sync(() => {
                     liveSelectionChanges.push({ model });
@@ -3557,6 +3559,54 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.effect("records a turn only once Claude accepts its prompt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ rejectOfferAt: 1 });
+        const now = yield* DateTime.now;
+        const turnInput = (attempt: string) =>
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make(attempt),
+            text: "Continue.",
+            attachments: [],
+          });
+        yield* harness.runtime.startTurn(turnInput("attempt-claude-accepted"));
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* harness.awaitTerminal(1);
+
+        const rejected = yield* harness.runtime
+          .startTurn({
+            ...turnInput("attempt-claude-rejected"),
+            providerTurnOrdinal: 2,
+            nativeThreadHasTurns: true,
+          })
+          .pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(rejected));
+        yield* yieldTicks(50);
+        assert.deepEqual(
+          harness.events.flatMap((event) =>
+            event.type === "provider_turn.updated"
+              ? [`${event.providerTurn.runAttemptId}:${event.providerTurn.status}`]
+              : [],
+          ),
+          ["attempt-claude-accepted:running", "attempt-claude-accepted:completed"],
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
 
   it.effect.each(["release-after", "cancel-after", "release-before", "resume-pending"] as const)(
     "keeps attachment reservations across compaction: %s boundary",

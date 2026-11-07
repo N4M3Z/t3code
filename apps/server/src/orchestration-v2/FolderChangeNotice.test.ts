@@ -32,7 +32,6 @@ function run(ordinal: number, extra: Partial<OrchestrationV2Run> = {}): Orchestr
 const codexThreadId = ProviderThreadId.make("provider-thread:codex");
 const opencodeThreadId = ProviderThreadId.make("provider-thread:opencode");
 
-/** Every run's active attempt reached Codex unless `accepted` or `onOpencode` narrows it. */
 const latest = (
   runs: ReadonlyArray<OrchestrationV2Run>,
   options: {
@@ -95,9 +94,6 @@ it("takes the folder of the latest run the provider accepted that still stands",
     latest([inA, failed, { ...next, status: "rolled_back" }], { accepted: [inA, next] }),
     "/a",
   );
-  const queuedInA = run(2, { cwd: "/w" });
-  assert.strictEqual(latest([inA, queuedInA], { accepted: [inA] }), "/a");
-  assert.strictEqual(latest([inA, queuedInA]), "/w");
 });
 
 it("skips a /goal run only when the driver that ran it parses /goal", () => {

@@ -48,6 +48,7 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { withInlineContext } from "./ContextHandoffDelivery.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -142,6 +143,7 @@ function startWithMissingWorktree(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         Layer.mock(EventStore.EventStoreV2)({}),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({}),
         IdAllocator.layer,
         Layer.succeed(FileSystem.FileSystem, {
           exists: () => Effect.succeed(false),
@@ -311,6 +313,7 @@ function makeLocalCommandHarness(input: {
     readonly switchedProvider?: boolean;
     readonly threadRuntimeMode?: OrchestrationV2ThreadProjection["thread"]["runtimeMode"];
     readonly parentRunCwd?: string;
+    readonly relocation?: Deferred.Deferred<void>;
   };
 }) {
   const settledRuns: Array<string> = [];
@@ -528,7 +531,7 @@ function makeLocalCommandHarness(input: {
     parentProviderTurn(1, parentRunId),
     parentProviderTurn(2, parentRolledBackRunId),
   ];
-  const parentRecords = {
+  let parentRecords = {
     ...projection,
     thread: { ...projection.thread, id: parentThreadId },
     runs: [
@@ -596,6 +599,8 @@ function makeLocalCommandHarness(input: {
   const readEvents = vi.fn<EventStore.EventStoreV2["Service"]["read"]>((request) =>
     Stream.fromIterable(request?.threadId === parentThreadId ? parentScopeEvents : []),
   );
+  const relocation = input.sideChat?.relocation;
+  const relocationAwaited = Deferred.makeUnsafe<void>();
   if (input.sideChat !== undefined) {
     const earlierRunId = RunId.make("side-chat-earlier-run");
     projection = {
@@ -977,6 +982,29 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         Layer.mock(EventStore.EventStoreV2)({ read: readEvents }),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({
+          unsettledEffectIds: () =>
+            Effect.succeed(relocation === undefined ? [] : ["relocate-parent"]),
+          awaitSettled: () =>
+            relocation === undefined
+              ? Effect.void
+              : Deferred.succeed(relocationAwaited, undefined).pipe(
+                  Effect.andThen(Deferred.await(relocation)),
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      parentRecords = {
+                        ...parentRecords,
+                        providerThreads: [
+                          {
+                            ...parentProviderThread,
+                            nativeStorageFolder: "/repo/side-chat-parent-moved",
+                          },
+                        ],
+                      };
+                    }),
+                  ),
+                ),
+        }),
         IdAllocator.layer,
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
@@ -1059,6 +1087,7 @@ function makeLocalCommandHarness(input: {
     startTurn,
     forkThread,
     readEvents,
+    relocationAwaited,
     interruptTurn,
     tryHandlePromptCommand,
     events,
@@ -1425,6 +1454,28 @@ effectIt.effect.each([
       );
       expect(harness.projection().providerThreads[0]?.handoffIds).toEqual(handoffIds);
     }),
+);
+
+effectIt.effect("waits for the parent's Claude relocation before reading its storage folder", () =>
+  Effect.gen(function* () {
+    const relocation = yield* Deferred.make<void>();
+    const harness = makeLocalCommandHarness({
+      text: "What is the main thread doing?",
+      driver: ProviderDriverKind.make("claudeAgent"),
+      sideChat: { contextRun: "current", nativeForkFrom: "idle", relocation },
+    });
+
+    const start = yield* Effect.forkChild(harness.start);
+    yield* Effect.race(Deferred.await(harness.relocationAwaited), Fiber.await(start));
+    expect(harness.forkThread).not.toHaveBeenCalled();
+    yield* Deferred.succeed(relocation, undefined);
+    yield* Fiber.join(start);
+
+    expect(harness.forkThread.mock.calls[0]?.[0].sourceProviderThread.nativeStorageFolder).toBe(
+      "/repo/side-chat-parent-moved",
+    );
+    expect(harness.readEvents).not.toHaveBeenCalled();
+  }),
 );
 
 effectIt.effect.each([

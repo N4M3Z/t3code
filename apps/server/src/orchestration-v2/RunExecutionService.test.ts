@@ -2705,6 +2705,7 @@ it.effect("records a provider's input rejection at turn start and the folder it 
     const { written, observed, finalEvents } = yield* captureRootRunTermination({
       key: "start-failure:input-rejected",
       shouldFinalizeRun: () => Effect.succeed(true),
+      nativeStorageFolder: "/repo/a",
       // The adapter's update with the folder is still being ingested when the start fails.
       events: (ids) =>
         Stream.make({
@@ -3166,6 +3167,7 @@ function captureRootRunTermination(input: {
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
   readonly hasPendingBackgroundWorkForThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["hasPendingBackgroundWorkForThread"];
   readonly seedOpenSubagent?: boolean;
+  readonly nativeStorageFolder?: string;
   readonly events?: (
     ids: BackgroundScenarioIds,
   ) => Stream.Stream<
@@ -3337,6 +3339,9 @@ function captureRootRunTermination(input: {
         providerThread: {
           id: ids.providerThreadId,
           driver,
+          ...(input.nativeStorageFolder === undefined
+            ? {}
+            : { nativeStorageFolder: input.nativeStorageFolder }),
         } as OrchestrationV2ProviderThread,
         attempt: {
           id: ids.attemptId,

@@ -3,7 +3,13 @@ import type {
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
   OrchestrationV2RunAttempt,
+  ProviderThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
+
+import type * as EventStore from "./EventStore.ts";
 
 // Scopes in commit order; a run's latest scope wins.
 export function nativeStorageFolder(input: {
@@ -54,3 +60,36 @@ export function nativeStorageFolder(input: {
   return rootScopesInRunOrder.find(({ scope }) => scope.providerThreadId === providerThread.id)
     ?.scope.cwd;
 }
+
+export const nativeStorageFolders = Effect.fn("NativeStorageFolder.nativeStorageFolders")(
+  function* (
+    eventStore: Pick<EventStore.EventStoreV2Shape, "read">,
+    threadId: ThreadId,
+    records: Pick<Parameters<typeof nativeStorageFolder>[0], "runs" | "attempts"> & {
+      readonly providerThreads: ReadonlyArray<OrchestrationV2ProviderThread>;
+    },
+  ) {
+    const scopes = yield* Effect.cached(
+      Effect.suspend(() =>
+        eventStore.read({ threadId, eventType: "checkpoint-scope.created" }).pipe(
+          Stream.runCollect,
+          Effect.map((events) =>
+            Array.from(events).flatMap(({ event }) =>
+              event.type === "checkpoint-scope.created" ? [event.payload] : [],
+            ),
+          ),
+        ),
+      ),
+    );
+    const folders = new Map<ProviderThreadId, string>();
+    for (const providerThread of records.providerThreads) {
+      if (providerThread.driver !== "claudeAgent") continue;
+      const history = { providerThread, runs: records.runs, attempts: records.attempts };
+      const folder =
+        nativeStorageFolder({ ...history, checkpointScopes: [] }) ??
+        nativeStorageFolder({ ...history, checkpointScopes: yield* scopes });
+      if (folder !== undefined) folders.set(providerThread.id, folder);
+    }
+    return folders;
+  },
+);

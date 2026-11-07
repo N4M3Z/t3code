@@ -235,6 +235,10 @@ export interface EffectOutboxV2Shape {
     readonly threadIds: ReadonlyArray<ThreadId>;
     readonly effectType: OrchestrationEffectRequestV2["type"];
   }) => Effect.Effect<boolean, EffectOutboxError>;
+  readonly unsettledEffectIds: (input: {
+    readonly threadId: ThreadId;
+    readonly effectType: OrchestrationEffectRequestV2["type"];
+  }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
@@ -497,6 +501,20 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 (cause) => new EffectOutboxError({ operation: "has-unsettled", cause }),
               ),
             ),
+      unsettledEffectIds: ({ threadId, effectType }) =>
+        sql<{ readonly effect_id: string }>`
+          SELECT effect_id
+          FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${threadId}
+            AND effect_type = ${effectType}
+            AND status IN ('pending', 'running')
+        `.pipe(
+          NodeSqliteClient.readOnly,
+          Effect.map((rows) => rows.map(({ effect_id }) => effect_id)),
+          Effect.mapError(
+            (cause) => new EffectOutboxError({ operation: "unsettled-effect-ids", cause }),
+          ),
+        ),
       signalCancellations: Effect.fn("EffectOutbox.signalCancellations")(function* (effectIds) {
         yield* Effect.forEach(
           effectIds,

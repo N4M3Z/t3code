@@ -40,6 +40,10 @@ const latest = (
     readonly compactions?: ReadonlyArray<OrchestrationV2Run>;
     readonly goals?: ReadonlyArray<OrchestrationV2Run>;
     readonly onOpencode?: ReadonlyArray<OrchestrationV2Run>;
+    readonly receipts?: ReadonlyArray<{
+      readonly ordinal: number;
+      readonly previousFolder?: string;
+    }>;
   } = {},
 ) =>
   latestCountedRunFolder({
@@ -65,6 +69,10 @@ const latest = (
           ? "/goal Ship it"
           : "Continue",
       attachments: [],
+    })),
+    turnItems: (options.receipts ?? []).map((receipt) => ({
+      type: "system_notice" as const,
+      ...receipt,
     })),
   });
 
@@ -136,9 +144,22 @@ it("counts a run the provider accepted on an attempt a steer later replaced", ()
       providerTurns: [{ runAttemptId: accepted.id }],
       providerThreads: [],
       messages: [],
+      turnItems: [],
     }),
     "/folder/1",
   );
+});
+
+it("falls back to the earliest move receipt only when no run counts", () => {
+  const receipts = [
+    { ordinal: 1 },
+    { ordinal: 3, previousFolder: "/moved/b" },
+    { ordinal: 2, previousFolder: "/moved/a" },
+  ];
+  assert.strictEqual(latest([], { receipts }), "/moved/a");
+  assert.strictEqual(latest([run(1)], { accepted: [], receipts }), "/moved/a");
+  assert.strictEqual(latest([run(1)], { receipts }), "/folder/1");
+  assert.strictEqual(latest([], { receipts: [{ ordinal: 1 }] }), undefined);
 });
 
 it.effect(

@@ -879,7 +879,14 @@ export const layer: Layer.Layer<
           ? ""
           : yield* folderChangeNote(
               fileSystem,
-              latestCountedRunFolder(projection),
+              latestCountedRunFolder({
+                ...projection,
+                turnItems: (yield* projectionStore.getThreadRecords(
+                  projection.thread.id,
+                  ["turnItems"],
+                  { turnItemTypes: ["system_notice"], turnItemRunIds: [null] },
+                )).turnItems,
+              }),
               resolvedRuntimePolicy.cwd,
             );
       const tokenCap = yield* handoffTokenCapConfig.pipe(

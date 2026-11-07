@@ -1623,6 +1623,33 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
   }),
 );
 
+effectIt.effect("scopes a run queued in another folder to the folder its turn starts in", () =>
+  Effect.gen(function* () {
+    const worktreePath = "/tmp/provider-start-handoff-worktree";
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      worktreePath,
+      failReadsAfterRunning: true,
+    });
+    const queuedScope = harness.projection().checkpointScopes[0]!;
+
+    yield* harness.start;
+
+    const rootScopes = harness
+      .projection()
+      .checkpointScopes.filter(
+        (scope) => scope.kind === "root_run" && scope.runId === queuedScope.runId,
+      );
+    expect(rootScopes).toEqual([{ ...queuedScope, cwd: worktreePath }]);
+    expect(harness.startRootRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkpointScope: { ...queuedScope, cwd: worktreePath },
+        runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
+      }),
+    );
+  }),
+);
+
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({

@@ -1460,6 +1460,11 @@ export const layer: Layer.Layer<
         status: "running",
         startedAt: now,
       };
+      // A worktree handoff or root edit can land after the run was scoped at enqueue.
+      const startCheckpointScope =
+        resolvedRuntimePolicy.cwd === null || resolvedRuntimePolicy.cwd === checkpointScope.cwd
+          ? checkpointScope
+          : { ...checkpointScope, cwd: resolvedRuntimePolicy.cwd };
       const events: Array<OrchestrationV2DomainEvent> = [
         {
           id: yield* idAllocator.allocate.event({
@@ -1508,6 +1513,20 @@ export const layer: Layer.Layer<
                   updatedAt: now,
                   consumedAt: now,
                 },
+              },
+            ]),
+        ...(startCheckpointScope === checkpointScope
+          ? []
+          : [
+              {
+                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                type: "checkpoint-scope.created" as const,
+                threadId: projection.thread.id,
+                runId: run.id,
+                nodeId: rootNode.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: startCheckpointScope,
               },
             ]),
         {
@@ -1678,7 +1697,7 @@ export const layer: Layer.Layer<
         session: deliverySession,
         run: runningRun,
         rootNode: runningRootNode,
-        checkpointScope,
+        checkpointScope: startCheckpointScope,
         providerThread: runningProviderThread,
         attempt: runningAttempt,
         attemptId: attempt.id,

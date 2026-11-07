@@ -1395,10 +1395,20 @@ export const layerQueryRunner: Layer.Layer<
             offer: (message, onQueued) =>
               Effect.uninterruptibleMask((restore) =>
                 restore(Queue.offer(promptQueue, message)).pipe(
-                  Effect.tap(() => Effect.sync(() => onQueued?.())),
+                  Effect.flatMap((queued) =>
+                    queued
+                      ? Effect.sync(() => onQueued?.())
+                      : Effect.fail(
+                          new ClaudeAgentSdkQueryRunnerError({
+                            method: "offer",
+                            cause: new Error(
+                              "Claude prompt queue closed before the prompt was queued.",
+                            ),
+                          }),
+                        ),
+                  ),
                 ),
               ).pipe(
-                Effect.asVoid,
                 Effect.tap(() =>
                   logProtocolEvent({
                     direction: "outgoing",
@@ -8384,8 +8394,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           cause?: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
         ) {
           const current = yield* Ref.get(activeTurn);
-          // A replacement query can reuse the native thread id; only this query's turn is ours.
-          const context = closedQuery.lastTurn;
+          // A replacement query can reuse the native thread id; only this query's turn is ours. A
+          // prompt still awaiting acceptance can only be attached to the live query, this one.
+          const context = current?.accepted === false ? current : closedQuery.lastTurn;
           if (context === null) return;
           const interrupted =
             closedQuery.stopping || (yield* Ref.get(interruptedTurns)).has(context.providerTurnId);
@@ -8412,7 +8423,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // Preserve buffered outcomes before Stop clears the wake buffer.
           yield* endSubagentsOfClosedQuery({
             closedQuery,
-            context,
+            context: closedQuery.lastTurn ?? context,
             subagents,
             buffered,
             interrupted,
@@ -11331,9 +11342,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               gatedFramesBeforeEcho: 0,
               heldRootFrames: [],
             };
+            const releaseTurn = Ref.update(activeTurn, (current) =>
+              current === context ? null : current,
+            );
             const attachTurn = Effect.gen(function* () {
-              querySession.lastTurn = context;
               yield* Ref.set(activeTurn, context);
+              if (
+                (yield* Ref.get(queryContext))?.query !== querySession.query ||
+                querySession.stopping
+              ) {
+                yield* releaseTurn;
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "Claude provider query ended before the turn could start.",
+                });
+              }
               if (
                 !isClaudeProviderContinuationTurn(turnInput) &&
                 permissionModeForClaudeRuntimePolicy(turnInput.runtimePolicy) ===
@@ -11381,12 +11404,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
             });
             const recordRunningTurn = Effect.gen(function* () {
-              if ((yield* Ref.get(activeTurn)) !== context) {
-                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver: CLAUDE_PROVIDER,
-                  detail: "Claude provider query ended before the turn could start.",
-                });
-              }
+              // A turn that settled before its offer returned keeps its terminal record last.
+              if ((yield* Ref.get(activeTurn)) !== context) return;
               yield* emitProviderEvent({
                 type: "provider_turn.updated",
                 driver: CLAUDE_PROVIDER,
@@ -11400,24 +11419,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (userMessage !== null) {
               yield* attachTurn;
               yield* startUserTurnForWakeReports(nativeThreadId);
+              const accept = () => {
+                context.accepted = true;
+                querySession.lastTurn = context;
+                pdfReservation.commit();
+              };
               yield* Effect.uninterruptibleMask((restore) =>
-                restore(
-                  querySession.query.offer(userMessage, () => {
-                    context.accepted = true;
-                    pdfReservation.commit();
-                  }),
-                ).pipe(
-                  Effect.tap(() =>
-                    Effect.sync(() => {
-                      context.accepted = true;
-                      pdfReservation.commit();
-                    }),
-                  ),
+                restore(querySession.query.offer(userMessage, accept)).pipe(
+                  Effect.tap(() => Effect.sync(accept)),
                   Effect.andThen(recordRunningTurn),
                   Effect.onError(() =>
-                    context.accepted
-                      ? recordRunningTurn.pipe(Effect.ignore)
-                      : Ref.update(activeTurn, (current) => (current === context ? null : current)),
+                    context.accepted ? recordRunningTurn.pipe(Effect.ignore) : releaseTurn,
                   ),
                 ),
               );
@@ -11426,16 +11438,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // Transcript reads suspend replay; hold SDK frames until the buffer is applied to preserve order.
             yield* sdkMessageLock.withPermits(1)(
               Effect.gen(function* () {
-                if (
-                  (yield* Ref.get(queryContext))?.query !== querySession.query ||
-                  querySession.stopping
-                ) {
-                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                    driver: CLAUDE_PROVIDER,
-                    detail: "Claude provider query ended before the continuation could start.",
-                  });
-                }
                 yield* attachTurn;
+                querySession.lastTurn = context;
                 yield* recordRunningTurn;
                 const drained = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
                 yield* releaseContinuationRequest(nativeThreadId);

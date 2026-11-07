@@ -1444,6 +1444,7 @@ export const layer: Layer.Layer<
       };
       const runningRun: OrchestrationV2Run = {
         ...run,
+        ...(resolvedRuntimePolicy.cwd === null ? {} : { cwd: resolvedRuntimePolicy.cwd }),
         status: "running",
         startedAt: now,
       };
@@ -1460,7 +1461,6 @@ export const layer: Layer.Layer<
         status: "running",
         startedAt: now,
       };
-      // A worktree handoff or root edit can land after the run was scoped at enqueue.
       const startCheckpointScope =
         resolvedRuntimePolicy.cwd === null || resolvedRuntimePolicy.cwd === checkpointScope.cwd
           ? checkpointScope

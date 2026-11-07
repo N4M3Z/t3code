@@ -1492,9 +1492,13 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
           runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
         }),
       );
+      expect(harness.projection().checkpointScopes).toMatchObject([{ cwd: worktreePath }]);
+      expect(harness.projection().runs.at(-1)?.cwd).toBe(worktreePath);
       expect(harness.startRootRun).toHaveBeenCalledWith(
         expect.objectContaining({
           appThread: expect.objectContaining({ worktreePath }),
+          run: expect.objectContaining({ cwd: worktreePath }),
+          checkpointScope: harness.projection().checkpointScopes[0],
           runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
         }),
       );
@@ -1620,33 +1624,6 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     expect(second.projection().runs.at(-1)?.status).toBe("running");
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
-  }),
-);
-
-effectIt.effect("scopes a run queued in another folder to the folder its turn starts in", () =>
-  Effect.gen(function* () {
-    const worktreePath = "/tmp/provider-start-handoff-worktree";
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      worktreePath,
-      failReadsAfterRunning: true,
-    });
-    const queuedScope = harness.projection().checkpointScopes[0]!;
-
-    yield* harness.start;
-
-    const rootScopes = harness
-      .projection()
-      .checkpointScopes.filter(
-        (scope) => scope.kind === "root_run" && scope.runId === queuedScope.runId,
-      );
-    expect(rootScopes).toEqual([{ ...queuedScope, cwd: worktreePath }]);
-    expect(harness.startRootRun).toHaveBeenCalledWith(
-      expect.objectContaining({
-        checkpointScope: { ...queuedScope, cwd: worktreePath },
-        runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
-      }),
-    );
   }),
 );
 
@@ -1808,6 +1785,7 @@ effectIt.effect("does not mistake a failed state read for a superseded run", () 
     yield* harness.start;
 
     expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    expect(harness.events.map((event) => event.type)).not.toContain("checkpoint-scope.created");
     const controls = harness.startRootRun.mock.calls[0]?.[0];
     expect(controls).toBeDefined();
     if (controls === undefined) return;

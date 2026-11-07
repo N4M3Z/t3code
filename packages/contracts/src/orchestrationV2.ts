@@ -708,6 +708,8 @@ export const OrchestrationV2Run = Schema.Struct({
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
+  /** The folder the run's turn started in; absent for older runs and runs that never started. */
+  cwd: Schema.optional(Schema.String),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 

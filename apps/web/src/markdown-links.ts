@@ -43,6 +43,7 @@ export function resolveInlineCodeFileLinkMeta(
   codeText: string,
   cwd?: string,
   baseDir: string | undefined = cwd,
+  exact = false,
 ): MarkdownFileLinkMeta | null {
   const candidate = inlineCodeFilePathCandidate(codeText);
   if (candidate === null) return null;
@@ -50,7 +51,8 @@ export function resolveInlineCodeFileLinkMeta(
   return resolveMarkdownFileLinkMeta(
     candidate,
     cwd,
-    inlineCodePathNamesFromWorkspaceRoot(candidate, cwd, baseDir) ? cwd : baseDir,
+    !exact && inlineCodePathNamesFromWorkspaceRoot(candidate, cwd, baseDir) ? cwd : baseDir,
+    exact,
   );
 }
 
@@ -69,6 +71,7 @@ export function resolveMarkdownFileLinkMeta(
   href: string | undefined,
   cwd?: string,
   baseDir: string | undefined = cwd,
+  exact = false,
 ): MarkdownFileLinkMeta | null {
   const targetPath = resolveMarkdownFileLinkTarget(href, cwd, baseDir);
   if (!targetPath) return null;
@@ -76,6 +79,7 @@ export function resolveMarkdownFileLinkMeta(
   return {
     ...buildFileLinkMetaFromTarget(targetPath, cwd),
     workspaceLookupPath:
+      !exact &&
       source !== null &&
       !isAbsolutePath(source.path) &&
       baseDir !== undefined &&

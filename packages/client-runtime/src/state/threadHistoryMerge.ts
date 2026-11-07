@@ -1,5 +1,6 @@
 import type {
   OrchestrationV2ProjectedTurnItem,
+  OrchestrationV2Run,
   OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { isOrchestrationV2TurnItemVisible } from "@t3tools/shared/orchestrationV2Timeline";
@@ -53,6 +54,7 @@ export function mergeOlderHistoryIntoProjection(
   projection: OrchestrationV2ThreadProjection,
   olderItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
   work?: { readonly anchorId: string; readonly nextCursor: string | null },
+  olderRuns: ReadonlyArray<OrchestrationV2Run> = [],
 ): OrchestrationV2ThreadProjection {
   if (olderItems.length === 0 && work === undefined) {
     return projection;
@@ -154,13 +156,20 @@ export function mergeOlderHistoryIntoProjection(
       ...projection.visibleTurnItems.filter((row) => !pageKeys.has(projectedItemKey(row))),
     ];
   }
+  const knownRunIds = new Set(projection.runs.map((run) => run.id));
+  const runs = olderRuns.filter((run) => !knownRunIds.has(run.id));
   if (
+    runs.length === 0 &&
     visible.length === projection.visibleTurnItems.length &&
     visible.every((row, index) => row === projection.visibleTurnItems[index])
   )
     return projection;
   return {
     ...projection,
+    runs:
+      runs.length === 0
+        ? projection.runs
+        : [...projection.runs, ...runs].sort((left, right) => left.ordinal - right.ordinal),
     turnItems: [...turnItemById.values()],
     visibleTurnItems: renumberVisible(visible),
   };

@@ -2913,6 +2913,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const bytePage = yield* projectionStore.getThreadHistoryPage(threadId, byteCursor);
       assert.isAbove(bytePage.items.length, 0);
       assert.isBelow(bytePage.items.length, 70);
+      assert.deepEqual(
+        bytePage.runs?.map((run) => run.id),
+        bytePage.items.map((row) => row.item.runId),
+      );
       assert.isAtMost(
         Buffer.byteLength(JSON.stringify(bytePage.items), "utf8"),
         THREAD_HISTORY_PAGE_POLICY.maxEncodedBytes,

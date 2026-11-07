@@ -3870,6 +3870,7 @@ export const OrchestrationV2ThreadHistoryPage = withRecordIdTable(
         item: ForwardCompatibleUnion(OrchestrationV2TurnItem.members, "type"),
       })),
     ),
+    runs: Schema.optional(Schema.Array(OrchestrationV2Run)),
     nextCursor: Schema.NullOr(TrimmedNonEmptyString),
     hasMoreHistory: Schema.Boolean,
     idTable: IdTableMarker,

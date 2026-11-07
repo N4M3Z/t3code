@@ -240,6 +240,8 @@ interface ChatMarkdownProps {
   onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
   onRunShellCommand?: ((command: string) => void) | undefined;
   imageBaseDir?: string | undefined;
+  /** The row's run folder; relative file links resolve there exactly, with no workspace lookup. */
+  fileLinkBaseDir?: string | undefined;
   workspaceMutationId?: string | null | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   /** Keep one list per configuration (a module constant): it keys the shared parse cache. */
@@ -459,16 +461,17 @@ function resolveFileLinkSources(
   key: string,
   cwd: string | undefined,
   imageBaseDir: string | undefined,
+  exactFileLinks: boolean,
 ) {
   const [hrefs, spans] = JSON.parse(key) as [string[], string[]];
   const markdownFileLinkMetaByHref = new Map<string, MarkdownFileLinkMeta>();
   for (const href of hrefs) {
-    const meta = resolveMarkdownFileLinkMeta(href, cwd, imageBaseDir ?? cwd);
+    const meta = resolveMarkdownFileLinkMeta(href, cwd, imageBaseDir ?? cwd, exactFileLinks);
     if (meta) markdownFileLinkMetaByHref.set(href, meta);
   }
   const inlineCodeFileLinkMetaByText = new Map<string, MarkdownFileLinkMeta>();
   for (const span of spans) {
-    const meta = resolveInlineCodeFileLinkMeta(span, cwd, imageBaseDir ?? cwd);
+    const meta = resolveInlineCodeFileLinkMeta(span, cwd, imageBaseDir ?? cwd, exactFileLinks);
     if (meta) inlineCodeFileLinkMetaByText.set(span, meta);
   }
   const fileLinkParentSuffixByPath = buildFileLinkParentSuffixByPath([
@@ -490,7 +493,8 @@ function useChatMarkdownState({
   skills = EMPTY_MARKDOWN_SKILLS,
   onUseArtifactTemplate,
   onRunShellCommand,
-  imageBaseDir,
+  imageBaseDir: documentBaseDir,
+  fileLinkBaseDir,
   workspaceMutationId,
   onImageExpand,
   renderContextReference,
@@ -498,6 +502,8 @@ function useChatMarkdownState({
   sourceControlMedia = false,
   sourceControlMediaRepository,
 }: ChatMarkdownProps) {
+  const imageBaseDir = fileLinkBaseDir ?? documentBaseDir;
+  const exactFileLinks = fileLinkBaseDir !== undefined;
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
   const mediaRequestId = useRef(0);
@@ -675,7 +681,7 @@ function useChatMarkdownState({
   // A template literal marks the key as a string, so the compiler memoizes the maps on its value.
   const fileLinksKey = `${fileLinkSourcesKey(text, cwd, imageBaseDir)}`;
   const { markdownFileLinkMetaByHref, inlineCodeFileLinkMetaByText, fileLinkParentSuffixByPath } =
-    resolveFileLinkSources(fileLinksKey, cwd, imageBaseDir);
+    resolveFileLinkSources(fileLinksKey, cwd, imageBaseDir, exactFileLinks);
   const resolveThreadPullRequest = (
     href: string,
   ): (ThreadPullRequestKey & { readonly url: string }) | null => {
@@ -898,6 +904,7 @@ function useChatMarkdownState({
     renderContextReference,
     headingLevelOffset,
     imageBaseDir,
+    exactFileLinks,
     workspaceMutationId,
     inlineCodeFileLinkMetaByText,
     inline,
@@ -1059,6 +1066,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       cwd,
       environmentId,
       imageBaseDir,
+      exactFileLinks,
       markdownFileLinkMetaByHref,
       threadRef,
       openMarkdownMedia,
@@ -1100,7 +1108,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
     const fileLinkMeta = normalizedHref
       ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
-        resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd))
+        resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd, exactFileLinks))
       : null;
     if (!fileLinkMeta) {
       const faviconHost = resolveExternalWebLinkHost(href);
@@ -1327,8 +1335,15 @@ const CHAT_MARKDOWN_COMPONENTS = {
     );
   },
   code: function MarkdownCode({ node, children, className, ...props }) {
-    const { cwd, imageBaseDir, inlineCodeFileLinkMetaByText, fileLinkChip, mathEnabled, inline } =
-      use(ChatMarkdownRendererContext);
+    const {
+      cwd,
+      imageBaseDir,
+      exactFileLinks,
+      inlineCodeFileLinkMetaByText,
+      fileLinkChip,
+      mathEnabled,
+      inline,
+    } = use(ChatMarkdownRendererContext);
     const math = mathEnabled ? mathKind(className) : null;
     if (math) {
       return (
@@ -1343,7 +1358,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       const codeText = nodeToPlainText(children);
       const fileLinkMeta =
         inlineCodeFileLinkMetaByText.get(codeText.trim()) ??
-        resolveInlineCodeFileLinkMeta(codeText, cwd, imageBaseDir ?? cwd);
+        resolveInlineCodeFileLinkMeta(codeText, cwd, imageBaseDir ?? cwd, exactFileLinks);
       if (fileLinkMeta) {
         return fileLinkChip(
           fileLinkMeta,
@@ -1371,6 +1386,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       sourceControlMedia,
       sourceControlMediaRepository,
       imageBaseDir,
+      exactFileLinks,
       threadRef,
       workspaceMutationId,
       renderContextReference,
@@ -1436,7 +1452,12 @@ const CHAT_MARKDOWN_COMPONENTS = {
       );
     }
     if (mediaKind === null && imageSource._tag === "WorkspaceFile") {
-      const fileLinkMeta = resolveMarkdownFileLinkMeta(srcString, cwd, imageBaseDir ?? cwd);
+      const fileLinkMeta = resolveMarkdownFileLinkMeta(
+        srcString,
+        cwd,
+        imageBaseDir ?? cwd,
+        exactFileLinks,
+      );
       if (fileLinkMeta) return fileLinkChip(fileLinkMeta, copyMarkdown, srcString);
     }
     const kind = mediaKind ?? "image";

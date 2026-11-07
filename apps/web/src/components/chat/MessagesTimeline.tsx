@@ -13,6 +13,7 @@ import {
   type AssistantCitation,
   type EnvironmentId,
   type MessageId,
+  type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
   type RunAttemptId,
   type ServerProviderSkill,
@@ -85,6 +86,8 @@ import {
   resolveTimelineMinimapHitStripWidth,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
+  deriveRunFolderByRunId,
+  timelineRowFolder,
   type MessagesTimelineRow,
   type TimelineLatestRun,
 } from "./MessagesTimeline.logic";
@@ -106,6 +109,7 @@ import {
   type TimelineRowActivityState,
   TimelineRowCtx,
   TimelineRowActivityCtx,
+  TimelineRowFolderCtx,
   type WorkGroupViewState,
   type TimelineRow,
 } from "./timelineRowContext";
@@ -293,7 +297,7 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<ServerProviderSkill>;
-  runs: ReadonlyArray<HandoffTimelineRun>;
+  runs: ReadonlyArray<HandoffTimelineRun & Pick<OrchestrationV2Run, "cwd">>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -1232,6 +1236,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       return next;
     });
   });
+  const runFolderByRunId = deriveRunFolderByRunId(runsProp);
   const renderItem = ({ item }: { item: MessagesTimelineRow }) => (
     <TimelineRowCtx value={sharedState}>
       <div
@@ -1246,13 +1251,20 @@ const ConversationTimeline = memo(function ConversationTimeline({
           data-timeline-root="true"
         >
           <AudioPreviewUnmountContext value={onAudioUnmount}>
-            <TimelineRowContent row={item} />
+            <TimelineRowFolderCtx value={timelineRowFolder(item, runFolderByRunId)}>
+              <TimelineRowContent row={item} />
+            </TimelineRowFolderCtx>
           </AudioPreviewUnmountContext>
         </div>
       </div>
     </TimelineRowCtx>
   );
-  const listExtraData = { identity: listIdentityKey, rowCount: rows.length, sharedState };
+  const listExtraData = {
+    identity: listIdentityKey,
+    rowCount: rows.length,
+    sharedState,
+    runFolderByRunId,
+  };
   const timelineListFooter = (
     <TimelineListFooter
       composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}

@@ -54,6 +54,7 @@ import {
   idleCompactionOf,
   isCompactionCommandMessage,
   type MessageId,
+  type OrchestrationV2Run,
   type OrchestrationV2IdleCompaction,
   type WorktreeSetupSnapshot,
   type OrchestrationV2ProjectedTurnItem,
@@ -2670,6 +2671,31 @@ export function shouldCollapseUserMessage(text: string): boolean {
     visible.length > MAX_COLLAPSED_USER_MESSAGE_LENGTH ||
     visible.split("\n").length > MAX_COLLAPSED_USER_MESSAGE_LINES
   );
+}
+
+export function deriveRunFolderByRunId(
+  runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "cwd">>,
+): ReadonlyMap<RunId, string> {
+  const folders = new Map<RunId, string>();
+  for (const run of runs) if (run.cwd !== undefined) folders.set(run.id, run.cwd);
+  return folders;
+}
+
+export function timelineRowFolder(
+  row: MessagesTimelineRow,
+  runFolderByRunId: ReadonlyMap<RunId, string>,
+): string | undefined {
+  const runId =
+    row.kind === "message"
+      ? row.message.runId
+      : row.kind === "proposed-plan"
+        ? row.proposedPlan.runId
+        : row.kind === "work"
+          ? row.groupedEntries[0]?.runId
+          : row.kind === "work-live"
+            ? row.entry.runId
+            : null;
+  return runId == null ? undefined : runFolderByRunId.get(runId);
 }
 
 export function handoffRunsSignature(runs: ReadonlyArray<HandoffTimelineRun>): string {

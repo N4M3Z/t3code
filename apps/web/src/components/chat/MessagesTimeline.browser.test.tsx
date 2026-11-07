@@ -44,6 +44,7 @@ import { remarkThoughtPreview } from "./TimelineWorkEntryRow.logic";
 import { parseMarkdownWithMath } from "@t3tools/shared/markdownMath";
 import { collectThreadFindRanges } from "./threadFindHighlights";
 import { toastManager } from "../ui/toast";
+import { useRightPanelStore } from "~/rightPanelStore";
 import type { CitedHistory } from "./citationProcedure";
 import type { TimelineNavigation } from "./timelineViewport";
 import { rememberTimelinePosition } from "./timelineScrollAnchoring";
@@ -1554,4 +1555,39 @@ it("keeps concurrent approvals actionable outside collapsed work and restores se
   await expect
     .element(screen.getByRole("button", { name: "Open the current tab", exact: true }))
     .toBeVisible();
+});
+
+describe("MessagesTimeline file links", () => {
+  it("opens a row's relative link under its run's folder", async () => {
+    const runId = RunId.make("run-1");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    await using screen = await renderTimeline(
+      [
+        message("See [a](src/a.ts).", { runId }, "in-run"),
+        message("See [b](src/b.ts).", {}, "runless"),
+      ],
+      {
+        markdownCwd: "/repo-w",
+        runs: [
+          {
+            id: runId,
+            ordinal: 1,
+            providerInstanceId,
+            modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+            cwd: "/repo-a",
+          },
+        ],
+      },
+    );
+    using openFile = vi
+      .spyOn(useRightPanelStore.getState(), "openFile")
+      .mockImplementation(() => {});
+    const links = () => [
+      ...screen.container.querySelectorAll<HTMLElement>("a.chat-markdown-file-link"),
+    ];
+    await vi.waitFor(() => expect(links()).toHaveLength(2));
+    await click(links()[0]!);
+    await click(links()[1]!);
+    expect(openFile.mock.calls.map((call) => call[1])).toEqual(["/repo-a/src/a.ts", "src/b.ts"]);
+  });
 });

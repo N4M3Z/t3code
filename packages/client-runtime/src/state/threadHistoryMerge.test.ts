@@ -1,8 +1,8 @@
-import type { OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
+import type { OrchestrationV2ProjectedTurnItem, OrchestrationV2Run } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 
-import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
+import { v2Projection, v2ThreadId, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import { mergeOlderHistoryIntoProjection } from "./threadHistoryMerge.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
 import { derivePendingThreadRequests } from "./threadRequests.ts";
@@ -36,6 +36,27 @@ function row(index: number): OrchestrationV2ProjectedTurnItem {
       completedAt: NOW,
       updatedAt: NOW,
     },
+  };
+}
+
+function run(index: number): OrchestrationV2Run {
+  return {
+    id: `run-${index}` as never,
+    threadId: v2ThreadId,
+    ordinal: index,
+    providerInstanceId: v2ThreadShell.providerInstanceId,
+    modelSelection: v2ThreadShell.modelSelection,
+    providerThreadId: null,
+    userMessageId: `message-${index}` as never,
+    rootNodeId: null,
+    activeAttemptId: null,
+    status: "completed",
+    requestedAt: NOW,
+    startedAt: NOW,
+    completedAt: NOW,
+    checkpointId: null,
+    contextHandoffId: null,
+    cwd: `/repo-${index}`,
   };
 }
 
@@ -110,13 +131,15 @@ describe("threadHistoryMerge", () => {
 
   it("prepends older rows and dedupes by source identity", () => {
     const recent = [row(2), row(3)];
+    const liveRun = { ...run(2), status: "running" as const };
     const projection = {
       ...v2Projection,
+      runs: [liveRun],
       turnItems: recent.map((entry) => entry.item),
       visibleTurnItems: recent.map((entry, position) => ({ ...entry, position })),
     };
     const older = [row(0), row(1), row(2)];
-    const merged = mergeOlderHistoryIntoProjection(projection, older);
+    const merged = mergeOlderHistoryIntoProjection(projection, older, undefined, [run(1), run(2)]);
     expect(merged.visibleTurnItems.map((entry) => entry.sourceItemId)).toEqual([
       "item-0",
       "item-1",
@@ -130,6 +153,7 @@ describe("threadHistoryMerge", () => {
       "item-0",
       "item-1",
     ]);
+    expect(merged.runs).toEqual([run(1), liveRun]);
   });
 
   it("fills inherited activity without confusing identical item IDs from different source threads", () => {

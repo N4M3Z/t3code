@@ -5962,11 +5962,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ...row,
               position,
             }));
+            const runIds = new Set(pageItems.map((row) => row.item.runId));
             return {
               snapshotSequence,
               items: conversationOnly
                 ? pageItems.filter((row) => isConversationHistoryItem(row.item))
                 : pageItems,
+              runs: index.records.runs.filter((run) => runIds.has(run.id)),
               nextCursor: bounded.hasMoreHistory ? bounded.nextCursor : page.nextCursor,
               hasMoreHistory: bounded.hasMoreHistory || page.hasMoreHistory,
             };

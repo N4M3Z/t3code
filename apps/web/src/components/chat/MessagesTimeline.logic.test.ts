@@ -26,6 +26,8 @@ import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  deriveRunFolderByRunId,
+  timelineRowFolder,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
   deriveMessagesTimelineRowsWithState,
@@ -4555,5 +4557,34 @@ describe("shouldCollapseUserMessage", () => {
 
     expect(shouldCollapseUserMessage(`${citation} Can you expand on this?`)).toBe(false);
     expect(shouldCollapseUserMessage(`${citation} ${"More text. ".repeat(60)}`)).toBe(true);
+  });
+});
+
+describe("timelineRowFolder", () => {
+  const row = (shape: object) => shape as MessagesTimelineRow;
+  const message = (runId: string | null) =>
+    row({ kind: "message", message: { runId: runId === null ? null : RunId.make(runId) } });
+
+  it("resolves a row against its run's folder and leaves other rows to the current one", () => {
+    const folders = deriveRunFolderByRunId([
+      { id: RunId.make("run-a"), cwd: "/root" },
+      { id: RunId.make("run-b"), cwd: "/worktree" },
+      { id: RunId.make("run-queued") },
+    ]);
+    const folder = (shape: MessagesTimelineRow) => timelineRowFolder(shape, folders);
+
+    expect(folder(message("run-a"))).toBe("/root");
+    expect(
+      folder(row({ kind: "proposed-plan", proposedPlan: { runId: RunId.make("run-b") } })),
+    ).toBe("/worktree");
+    expect(folder(row({ kind: "work", groupedEntries: [{ runId: RunId.make("run-a") }] }))).toBe(
+      "/root",
+    );
+    expect(folder(row({ kind: "work-live", entry: { runId: RunId.make("run-b") } }))).toBe(
+      "/worktree",
+    );
+    expect(folder(message("run-queued"))).toBeUndefined();
+    expect(folder(message(null))).toBeUndefined();
+    expect(folder(row({ kind: "context-compaction" }))).toBeUndefined();
   });
 });

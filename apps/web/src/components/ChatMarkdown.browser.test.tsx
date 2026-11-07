@@ -365,6 +365,24 @@ describe("ChatMarkdown workspace file opens", () => {
     expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/elsewhere/b.md", 9);
     expect(workspaceSearch).toHaveBeenCalledOnce();
   });
+
+  it("opens the literal file for a link with a recorded run folder instead of a search match", async () => {
+    setup();
+    workspaceSearch.mockResolvedValue(
+      AsyncResult.success({ entries: [{ path: "notes/a.md", kind: "file" }], truncated: false }),
+    );
+    await using screen = await renderText("[Notes](a.md)", {
+      cwd: "/school/physics",
+      fileLinkBaseDir: "/school/physics",
+      threadRef,
+    });
+    using openFile = vi
+      .spyOn(useRightPanelStore.getState(), "openFile")
+      .mockImplementation(() => {});
+    await act(async () => screen.container.querySelector("a")!.click());
+    expect(workspaceSearch).not.toHaveBeenCalled();
+    expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "a.md", undefined);
+  });
 });
 
 describe("ChatMarkdown skill chips", () => {

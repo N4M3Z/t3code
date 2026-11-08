@@ -13,6 +13,7 @@ import {
   RunId,
   ServerSettingsError,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -62,6 +63,7 @@ import {
   runCreated,
   threadCreated,
 } from "./ThreadMove.testkit.ts";
+import { moveReceiptTurnItem } from "./ThreadMoveReceipt.ts";
 import * as ThreadMoveService from "./ThreadMoveService.ts";
 
 const codexId = ProviderInstanceId.make("codex");
@@ -266,8 +268,29 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
 
   it.effect("only the call that carries every flag changes state", () =>
     Effect.gen(function* () {
-      const { at, a, thread, shell, service, projects, projections } = yield* setup("flags");
+      const { at, a, thread, shell, service, projects, projections, sink } = yield* setup("flags");
       const threadId = yield* thread("t", a.id, at("w"), { branch: "feature" });
+      const runId = RunId.make("flags:run");
+      const earlier = moveReceiptTurnItem({
+        id: TurnItemId.make("flags:earlier"),
+        threadId,
+        ordinal: 1,
+        movedAt: createdAt,
+        previousFolder: at("w"),
+        message: "earlier",
+      });
+      yield* sink.write({
+        events: [
+          runCreated({ id: runId, threadId, ordinal: 1, providerInstanceId: codexId }),
+          {
+            id: EventId.make("flags:earlier"),
+            type: "turn-item.updated" as const,
+            threadId,
+            occurredAt: createdAt,
+            payload: { ...earlier, runId },
+          },
+        ],
+      });
       const sideId = yield* thread("side", a.id, at("w"), { parent: threadId, kind: "side" });
       const forkId = yield* thread("fork", a.id, at("w"), { parent: threadId, kind: "fork" });
       const added = () =>
@@ -303,7 +326,13 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
       }
       assert.equal((yield* shell(forkId)).projectId, a.id);
       const { turnItems } = yield* projections.getThreadRecords(threadId, ["turnItems"]);
-      const receipt = turnItems.find((item) => item.type === "system_notice");
+      const receipt = turnItems.find((item) => item.id !== earlier.id);
+      // A reload reads this order: the receipt comes after the run's item.
+      const reloaded = yield* projections.getThreadProjection(threadId);
+      assert.deepEqual(
+        reloaded.visibleTurnItems.map((row) => row.item.id),
+        [earlier.id, receipt?.id],
+      );
       const message = receipt?.type === "system_notice" ? receipt.message : "";
       assert.equal(receipt?.type === "system_notice" ? receipt.previousFolder : null, at("w"));
       assert.include(message, `The next turn runs in ${at("plain")}.`);

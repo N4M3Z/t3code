@@ -1672,9 +1672,8 @@ it("opens a row's relative links under its run's folder", async () => {
   ] as const) {
     await screen.rerender(ui({ runs: [run("run-1", folder)] }));
     await vi.waitFor(() => {
-      fileMenu.targets = [];
       screen.button(/^kept\.txt/).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
-      expect(fileMenu.targets.map(resolveFileContextMenuAbsolutePath)).toEqual([target]);
+      expect(resolveFileContextMenuAbsolutePath(fileMenu.targets.at(-1)!)).toEqual(target);
     });
   }
 

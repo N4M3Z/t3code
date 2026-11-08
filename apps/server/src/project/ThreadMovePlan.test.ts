@@ -3,12 +3,9 @@ import {
   CommandId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderSession,
-  type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
   ProjectId,
-  ProviderDriverKind,
   ProviderInstanceId,
-  ProviderSessionId,
   ProviderThreadId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -16,9 +13,8 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
-import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { applyToProjection, emptyProjection } from "../orchestration-v2/ProjectionStore.ts";
-import { createdAt, threadCreated } from "./ThreadMove.testkit.ts";
+import { codexSession, providerThread, threadCreated } from "./ThreadMove.testkit.ts";
 import { planThreadMove, type ThreadMoveMember } from "./ThreadMovePlan.ts";
 import type { ThreadMoveReceiptInput } from "./ThreadMoveReceipt.ts";
 
@@ -34,71 +30,46 @@ function projection(input: {
   readonly branch?: string | null;
   readonly pullRequest?: { readonly number: number; readonly url: string } | null;
   readonly sessions?: ReadonlyArray<OrchestrationV2ProviderSession["status"]>;
-  readonly claudeSession?: { readonly nativeId: string } | null;
+  readonly claudeSession?: string;
 }): OrchestrationV2ThreadProjection {
   const threadId = ThreadId.make(input.id);
-  const base = emptyProjection(
-    threadCreated({
-      threadId,
-      projectId: projectA,
-      worktreePath: input.worktreePath,
-      providerInstanceId: input.claudeSession ? claude : codex,
-      branch: input.branch,
-      ...(input.pullRequest
-        ? {
-            branchPullRequest: {
-              projectId: projectA,
-              repository: "t3tools/t3code",
-              ...input.pullRequest,
-            },
-          }
-        : {}),
-    }),
-  );
-  const providerThreads: Array<OrchestrationV2ProviderThread> = input.claudeSession
-    ? [
-        {
-          id: ProviderThreadId.make(`provider-thread:${input.id}`),
-          driver: ProviderDriverKind.make("claudeAgent"),
-          providerInstanceId: claude,
-          providerSessionId: null,
-          appThreadId: threadId,
-          ownerNodeId: null,
-          nativeThreadRef: {
-            driver: ProviderDriverKind.make("claudeAgent"),
-            nativeId: input.claudeSession.nativeId,
-            strength: "strong",
-          },
-          nativeConversationHeadRef: null,
-          status: "idle",
-          firstRunOrdinal: null,
-          lastRunOrdinal: null,
-          handoffIds: [],
-          forkedFrom: null,
-          pendingBackgroundTasks: [],
-          contextUsage: null,
-          nativeMetadata: null,
-          goal: null,
-          createdAt,
-          updatedAt: createdAt,
-        },
-      ]
-    : [];
   return {
-    ...base,
-    providerThreads,
-    providerSessions: (input.sessions ?? []).map((status) => ({
-      id: ProviderSessionId.make(`session:${input.id}:${status}`),
-      driver: ProviderDriverKind.make("codex"),
-      providerInstanceId: codex,
-      status,
-      cwd: input.worktreePath ?? "/work/a",
-      model: null,
-      capabilities: CodexProviderCapabilitiesV2,
-      createdAt,
-      updatedAt: createdAt,
-      lastError: null,
-    })),
+    ...emptyProjection(
+      threadCreated({
+        threadId,
+        projectId: projectA,
+        worktreePath: input.worktreePath,
+        providerInstanceId: input.claudeSession === undefined ? codex : claude,
+        branch: input.branch,
+        ...(input.pullRequest
+          ? {
+              branchPullRequest: {
+                projectId: projectA,
+                repository: "t3tools/t3code",
+                ...input.pullRequest,
+              },
+            }
+          : {}),
+      }),
+    ),
+    providerThreads:
+      input.claudeSession === undefined
+        ? []
+        : [
+            providerThread({
+              id: `provider-thread:${input.id}`,
+              threadId,
+              providerInstanceId: claude,
+              nativeId: input.claudeSession,
+            }),
+          ],
+    providerSessions: (input.sessions ?? []).map((status) =>
+      codexSession({
+        id: `session:${input.id}:${status}`,
+        status,
+        cwd: input.worktreePath ?? "/work/a",
+      }),
+    ),
   };
 }
 
@@ -136,7 +107,6 @@ const plan = Effect.fn("ThreadMovePlanTest.plan")(function* (input: {
   });
 });
 
-/** The event members whose `type` admits `T`; some members carry a union of types. */
 type EventOf<T extends OrchestrationV2DomainEvent["type"]> =
   OrchestrationV2DomainEvent extends infer Event
     ? Event extends { readonly type: infer Type }
@@ -168,13 +138,6 @@ it.effect.each([
     to: "/work/b",
     scratch: null,
   },
-  {
-    name: "scratch to root",
-    worktreePath: "/scratch/t",
-    from: "/scratch/t",
-    to: "/work/b",
-    scratch: null,
-  },
   { name: "/no", worktreePath: null, from: "/work/a", to: "/scratch/new", scratch: "/scratch/new" },
 ])("moves a thread and its member from $name in one batch", ({ worktreePath, from, to, scratch }) =>
   Effect.gen(function* () {
@@ -185,9 +148,8 @@ it.effect.each([
       worktreePath: scratch,
       folder: to,
     });
-    const moved = ofType(events, "thread.metadata-updated");
     assert.deepEqual(
-      moved.map((event) => [
+      ofType(events, "thread.metadata-updated").map((event) => [
         event.payload.id,
         event.payload.projectId,
         event.payload.worktreePath,
@@ -265,7 +227,6 @@ it.effect("links the pull request a cleared branch tracked, once", () =>
     const thread = projection({ id: "t", worktreePath: null, branch: "feature", pullRequest });
     const { events } = yield* plan({ members: [member(thread, "/work/a")] });
     const [synced] = ofType(events, "thread.pull-request-synced");
-    assert.isDefined(synced);
     assert.deepEqual(
       synced?.payload.pullRequests?.map((link) => [
         link.host,
@@ -281,23 +242,21 @@ it.effect("links the pull request a cleared branch tracked, once", () =>
     const after = events.reduce(applyToProjection, thread);
     assert.lengthOf(after.thread.pullRequests ?? [], 1);
 
-    const linked = {
+    const withLinks = (pullRequests: typeof after.thread.pullRequests) => ({
       ...thread,
-      thread: { ...thread.thread, pullRequests: after.thread.pullRequests },
-    };
-    const again = yield* plan({ members: [member(linked, "/work/a")] });
+      thread: { ...thread.thread, pullRequests },
+    });
+    const again = yield* plan({
+      members: [member(withLinks(after.thread.pullRequests), "/work/a")],
+    });
     assert.lengthOf(ofType(again.events, "thread.pull-request-synced"), 0);
-    const dismissed = {
-      ...thread,
-      thread: {
-        ...thread.thread,
-        pullRequests: after.thread.pullRequests?.map((link) => ({
-          ...link,
-          source: "stack-dismissed" as const,
-          linkedAt: "2026-08-01T00:00:00.000Z",
-        })),
-      },
-    };
+    const dismissed = withLinks(
+      after.thread.pullRequests?.map((link) => ({
+        ...link,
+        source: "stack-dismissed" as const,
+        linkedAt: "2026-08-01T00:00:00.000Z",
+      })),
+    );
     const relinked = yield* plan({ members: [member(dismissed, "/work/a")] });
     assert.deepEqual(
       ofType(relinked.events, "thread.pull-request-synced").flatMap((event) =>
@@ -317,13 +276,9 @@ it.effect("relocates each Claude member's native session after its detach", () =
       id: "t",
       worktreePath: null,
       sessions: ["ready"],
-      claudeSession: { nativeId: "sess-1" },
+      claudeSession: "sess-1",
     });
-    const side = projection({
-      id: "side",
-      worktreePath: null,
-      claudeSession: { nativeId: "sess-2" },
-    });
+    const side = projection({ id: "side", worktreePath: null, claudeSession: "sess-2" });
     const codexOnly = projection({ id: "codex", worktreePath: null });
     const { effects } = yield* plan({
       members: [

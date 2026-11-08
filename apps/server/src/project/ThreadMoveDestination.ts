@@ -32,9 +32,7 @@ export type ThreadMoveShell = Pick<
 
 export interface ThreadMoveProviderInstance {
   readonly driver: ProviderDriverKind;
-  /** The driver's static capabilities; a member may have no live session. */
   readonly capabilities: Pick<OrchestrationV2ProviderCapabilities, "sessions">;
-  /** The CLI version from the instance's provider snapshot. */
   readonly version: string | null;
   readonly environment: { readonly CLAUDE_CONFIG_DIR?: string | undefined };
 }
@@ -70,9 +68,7 @@ export type ThreadMoveDecision =
 
 export interface ThreadMoveDecisionInput {
   readonly request: ThreadMoveInput;
-  /** Every thread of the environment, archived ones included. */
   readonly threads: ReadonlyArray<ThreadMoveShell>;
-  /** Every project of the environment, deleted ones included. */
   readonly projects: ReadonlyArray<Project>;
   readonly providerInstances: ReadonlyMap<ProviderInstanceId, ThreadMoveProviderInstance>;
   readonly settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">;
@@ -128,15 +124,14 @@ export function collectMoveSet(
 ): ReadonlyArray<ThreadMoveShell> {
   const members = threads.filter((thread) => thread.id === threadId && thread.deletedAt === null);
   for (const member of members) {
-    for (const child of threads) {
-      if (
-        child.deletedAt === null &&
-        child.lineage.parentThreadId === member.id &&
-        !isListedThreadLineage(child.lineage)
-      ) {
-        members.push(child);
-      }
-    }
+    members.push(
+      ...threads.filter(
+        (child) =>
+          child.deletedAt === null &&
+          child.lineage.parentThreadId === member.id &&
+          !isListedThreadLineage(child.lineage),
+      ),
+    );
   }
   return members;
 }
@@ -152,7 +147,6 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
   const folderOf = (shell: ThreadMoveShell) =>
     shell.worktreePath ?? projects.find((project) => project.id === shell.projectId)?.workspaceRoot;
   const realPaths = new Map<string, string>();
-  // A removed worktree or scratch folder compares by its normalized path.
   const resolve = Effect.fnUntraced(function* (target: string) {
     const known = realPaths.get(target);
     if (known !== undefined) return known;
@@ -271,56 +265,57 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     destination._tag === "new-project" ? null : (destination.project?.id ?? null);
   for (const member of members) {
     const title = quote(member.title);
-    const name = (reason: string) => refused(reason, { thread: namedThread(member) });
-    if (threadHasUnfinishedWork(yield* probes.threadRecords(member.id))) {
-      return name(`${title} is still working. Try again when the turn ends.`);
-    }
-    if (
-      yield* probes.hasBackgroundWork(member.id).pipe(Effect.catchCause(() => Effect.succeed(true)))
-    ) {
-      return name(`${title} still has background work running.`);
-    }
     const memberFolder = folderOf(member);
-    const folder = memberFolder === undefined ? undefined : yield* resolve(memberFolder);
-    if (folder !== threadFolder) {
-      return name(
-        `${title} works in another folder${memberFolder === undefined ? "" : `, ${memberFolder}`}.`,
-      );
-    }
     const instance = input.providerInstances.get(member.providerInstanceId);
-    if (instance?.capabilities.sessions.supportsFolderMove !== true) {
-      return name(
+    const isClaude = instance?.driver === CLAUDE_DRIVER;
+    const version = instance?.version ?? null;
+    const configDirRefusal = isClaude
+      ? claudeConfigDirRefusal(path, instance.environment)
+      : undefined;
+    const checks: ReadonlyArray<
+      readonly [boolean | (() => Effect.Effect<boolean, ThreadMoveError>), string]
+    > = [
+      [
+        () => Effect.map(probes.threadRecords(member.id), threadHasUnfinishedWork),
+        `${title} is still working. Try again when the turn ends.`,
+      ],
+      [
+        () =>
+          probes.hasBackgroundWork(member.id).pipe(Effect.catchCause(() => Effect.succeed(true))),
+        `${title} still has background work running.`,
+      ],
+      [
+        () =>
+          memberFolder === undefined
+            ? Effect.succeed(true)
+            : Effect.map(resolve(memberFolder), (folder) => folder !== threadFolder),
+        `${title} works in another folder${memberFolder === undefined ? "" : `, ${memberFolder}`}.`,
+      ],
+      [
+        instance?.capabilities.sessions.supportsFolderMove !== true,
         `${title} uses ${instance?.driver ?? member.providerInstanceId}, which does not support a folder move.`,
-      );
-    }
-    const version = instance.version;
-    if (
-      instance.driver === CLAUDE_DRIVER &&
-      (version === null ||
-        parseSemver(version) === null ||
-        compareSemverVersions(version, CLAUDE_MIN_VERSION) < 0)
-    ) {
-      return name(
+      ],
+      [
+        isClaude &&
+          (version === null ||
+            parseSemver(version) === null ||
+            compareSemverVersions(version, CLAUDE_MIN_VERSION) < 0),
         `${title} uses Claude Code ${version ?? "of unknown version"}, and a folder move needs ${CLAUDE_MIN_VERSION} or newer. Refresh the providers to check again.`,
-      );
-    }
-    if (
-      !resolveProjectProviderInstanceEnabled(
-        input.settings,
-        destinationProjectId,
-        member.providerInstanceId,
-      )
-    ) {
-      return name(
+      ],
+      [
+        !resolveProjectProviderInstanceEnabled(
+          input.settings,
+          destinationProjectId,
+          member.providerInstanceId,
+        ),
         `${title} uses ${member.providerInstanceId}, which the destination project disables.`,
-      );
-    }
-    const configDirRefusal =
-      instance.driver === CLAUDE_DRIVER
-        ? claudeConfigDirRefusal(path, instance.environment)
-        : undefined;
-    if (configDirRefusal !== undefined) {
-      return name(`${title} uses a Claude instance whose ${configDirRefusal}`);
+      ],
+      [configDirRefusal !== undefined, `${title} uses a Claude instance whose ${configDirRefusal}`],
+    ];
+    for (const [when, reason] of checks) {
+      if (typeof when === "boolean" ? when : yield* when()) {
+        return refused(reason, { thread: namedThread(member) });
+      }
     }
   }
   if (destination._tag === "new-project" && request.addProject !== true) {

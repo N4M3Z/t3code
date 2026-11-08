@@ -502,34 +502,30 @@ it.effect("moves scheduled tasks after a failed store write while the task keeps
             request: { type: "scheduled-tasks.move", threadIds: [threadId], projectId: to },
           },
         ]);
-      const failStore = sql`
+      const firesToThread = Effect.gen(function* () {
+        yield* tasks.runNow({ id: task.id });
+        const listed = yield* listedUnder;
+        assert.deepEqual(yield* Ref.getAndSet(sends, []), listed === to ? [to] : [from, to]);
+      });
+
+      yield* sql`
         CREATE TRIGGER fail_task_move BEFORE UPDATE OF project_id ON scheduled_tasks
         BEGIN SELECT RAISE(ABORT, 'task store unavailable'); END
       `;
-
-      yield* failStore;
-      yield* enqueueMove("effect:task-move:retried");
-      assert.isTrue(yield* worker.runOnce);
-      assert.equal(yield* statusOf("effect:task-move:retried"), "pending");
-      assert.equal(yield* listedUnder, from);
-      yield* tasks.runNow({ id: task.id });
-      assert.deepEqual(yield* Ref.get(sends), [from, to]);
-      yield* sql`DROP TRIGGER fail_task_move`;
-      yield* TestClock.adjust("100 millis");
-      assert.isTrue(yield* worker.runOnce);
-      assert.equal(yield* statusOf("effect:task-move:retried"), "succeeded");
-      assert.equal(yield* listedUnder, to);
-
-      yield* sql`UPDATE scheduled_tasks SET project_id = ${from} WHERE task_id = ${task.id}`;
-      yield* failStore;
-      yield* enqueueMove("effect:task-move:exhausted");
-      assert.isTrue(yield* worker.runOnce);
-      yield* TestClock.adjust("100 millis");
-      assert.isTrue(yield* worker.runOnce);
-      assert.equal(yield* statusOf("effect:task-move:exhausted"), "failed");
-      assert.equal(yield* listedUnder, from);
-      yield* tasks.runNow({ id: task.id });
-      assert.deepEqual(yield* Ref.get(sends), [from, to, from, to]);
+      for (const recovers of [false, true]) {
+        const effectId = `effect:task-move:${recovers ? "retried" : "exhausted"}`;
+        yield* enqueueMove(effectId);
+        assert.isTrue(yield* worker.runOnce);
+        assert.equal(yield* statusOf(effectId), "pending");
+        assert.equal(yield* listedUnder, from);
+        yield* firesToThread;
+        if (recovers) yield* sql`DROP TRIGGER fail_task_move`;
+        yield* TestClock.adjust("100 millis");
+        assert.isTrue(yield* worker.runOnce);
+        assert.equal(yield* statusOf(effectId), recovers ? "succeeded" : "failed");
+        assert.equal(yield* listedUnder, recovers ? to : from);
+        yield* firesToThread;
+      }
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

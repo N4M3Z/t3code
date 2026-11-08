@@ -16,7 +16,6 @@ import {
   threadPullRequestsOf,
 } from "../sourceControl/threadPullRequests.ts";
 import {
-  memberMoveNoticeMessage,
   moveReceiptTurnItem,
   threadMoveReceiptMessage,
   type ThreadMoveReceiptInput,
@@ -53,17 +52,17 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
   const effects: Array<PendingOrchestrationEffectV2> = [];
   const emit = Effect.fn("ThreadMovePlan.emit")(function* <
     Event extends OrchestrationV2DomainEvent,
-  >(event: Omit<Event, "id">) {
+  >(event: Omit<Event, "id" | "occurredAt">) {
     const id = yield* input.idAllocator.allocate.event({
       threadId: event.threadId,
       commandId: command.commandId,
     });
-    events.push({ ...event, id } as Event);
+    events.push({ ...event, id, occurredAt: now } as Event);
   });
   const threadTitle = input.members[0]?.projection.thread.title ?? "";
   for (const [index, member] of input.members.entries()) {
     const { thread, providerSessions, providerThreads } = member.projection;
-    const threadId = thread.id;
+    const { id: threadId, providerInstanceId } = thread;
     const effect = (suffix: string, request: PendingOrchestrationEffectV2["request"]) =>
       effects.push({
         id: `effect:${command.commandId}:${request.type}:${suffix}`,
@@ -79,38 +78,32 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
       branchPullRequest: null,
       updatedAt: now,
     };
-    yield* emit({
-      type: "thread.metadata-updated",
-      threadId,
-      providerInstanceId: thread.providerInstanceId,
-      occurredAt: now,
-      payload: moved,
-    });
+    yield* emit({ type: "thread.metadata-updated", threadId, providerInstanceId, payload: moved });
     const tracked = thread.branch === null ? null : thread.branchPullRequest;
     if (tracked != null) {
       const key = legacyThreadPullRequestKey(tracked);
       const links = threadPullRequestsOf(moved);
       const existing = links.find((link) => threadPullRequestKeysEqual(link, key));
       if (existing === undefined || existing.source === "stack-dismissed") {
+        const link =
+          existing === undefined
+            ? {
+                ...key,
+                url: tracked.url,
+                linkedAt: DateTime.formatIso(now),
+                snapshot: null,
+                stack: null,
+              }
+            : existing;
         yield* emit({
           type: "thread.pull-request-synced",
           threadId,
-          providerInstanceId: thread.providerInstanceId,
-          occurredAt: now,
+          providerInstanceId,
           payload: {
             ...moved,
             pullRequests: [
-              ...links.filter((link) => link !== existing),
-              existing === undefined
-                ? {
-                    ...key,
-                    url: tracked.url,
-                    source: "manual",
-                    linkedAt: DateTime.formatIso(now),
-                    snapshot: null,
-                    stack: null,
-                  }
-                : { ...existing, source: "manual" },
+              ...links.filter((other) => other !== existing),
+              { ...link, source: "manual" },
             ],
           },
         });
@@ -124,7 +117,6 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
           threadId,
           driver: session.driver,
           providerInstanceId: session.providerInstanceId,
-          occurredAt: now,
           payload: { providerSessionId: session.id, detachedAt: now, reason: DETACH_REASON },
         });
         effect(session.id, {
@@ -150,7 +142,6 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
     yield* emit({
       type: "turn-item.updated",
       threadId,
-      occurredAt: now,
       payload: moveReceiptTurnItem({
         id: TurnItemId.make(`${command.commandId}:receipt:${threadId}`),
         threadId,
@@ -160,7 +151,7 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
         message:
           index === 0
             ? threadMoveReceiptMessage(input.receipt)
-            : memberMoveNoticeMessage({ threadTitle, folder: input.folder }),
+            : `Moved with ${threadTitle}. The next turn runs in ${input.folder}. The receipt in ${threadTitle} lists the details.`,
       }),
     });
     effect(threadId, {

@@ -40,10 +40,8 @@ import {
   decideThreadMove,
   type ThreadMoveProbes,
   type ThreadMoveProviderInstance,
-  type ThreadMoveShell,
 } from "./ThreadMoveDestination.ts";
 import { planThreadMove, type ThreadMoveMember } from "./ThreadMovePlan.ts";
-import type { ThreadMoveReceiptInput } from "./ThreadMoveReceipt.ts";
 
 export class ThreadMoveService extends Context.Service<
   ThreadMoveService,
@@ -80,11 +78,6 @@ export const make = Effect.gen(function* () {
   const fail = (message: string) => (cause: unknown) => new ThreadMoveError({ message, cause });
   const resolve = (folder: string) =>
     fileSystem.realPath(folder).pipe(Effect.orElseSucceed(() => path.resolve(folder)));
-  const removeEmptyFolder = (folder: string) =>
-    Effect.tryPromise({
-      try: () => NodeFS.promises.rmdir(folder),
-      catch: fail("Could not remove the scratch folder."),
-    }).pipe(Effect.ignore);
 
   const probes: ThreadMoveProbes = {
     fileSystem,
@@ -239,8 +232,6 @@ export const make = Effect.gen(function* () {
     if (thread === undefined || previousProject === undefined) {
       return refused("This thread's project no longer exists.");
     }
-    const folderOf = (shell: ThreadMoveShell) =>
-      shell.worktreePath ?? previousProject.workspaceRoot;
     const worktreePath =
       target._tag !== "scratch"
         ? null
@@ -252,6 +243,7 @@ export const make = Effect.gen(function* () {
     if (worktreePath === undefined)
       return refused("Scratch folders are unavailable on this server.");
     const folder = worktreePath ?? project.workspaceRoot;
+    const previousFolder = thread.worktreePath ?? previousProject.workspaceRoot;
     const commit = Effect.gen(function* () {
       const members: Array<ThreadMoveMember> = [];
       for (const member of decision.members) {
@@ -263,40 +255,19 @@ export const make = Effect.gen(function* () {
             { turnItemTypes: [] },
           )
           .pipe(Effect.mapError(unreadable));
-        const storageFolders = yield* nativeStorageFolders(eventStore, member.id, projection).pipe(
-          Effect.mapError(unreadable),
-        );
         members.push({
           projection,
-          previousFolder: folderOf(member),
-          storageFolders,
+          previousFolder: member.worktreePath ?? previousProject.workspaceRoot,
+          storageFolders: yield* nativeStorageFolders(eventStore, member.id, projection).pipe(
+            Effect.mapError(unreadable),
+          ),
           nextOrdinal: yield* projections
             .getNextTurnItemOrdinal(member.id)
             .pipe(Effect.mapError(unreadable)),
         });
       }
-      const previousFolder = folderOf(thread);
       const moving = members[0]?.projection.thread;
       const tracked = moving?.branch == null ? null : (moving.branchPullRequest ?? null);
-      const receipt: ThreadMoveReceiptInput = {
-        folder,
-        previousFolder,
-        project: project.title,
-        previousProject: previousProject.title,
-        members: decision.members.slice(1).map((member) => member.title),
-        clearedBranch: moving?.branch ?? null,
-        pullRequest: tracked === null ? null : { number: tracked.number, url: tracked.url },
-        leftFolder:
-          decision.leaving === null
-            ? null
-            : {
-                exists: yield* fileSystem
-                  .exists(previousFolder)
-                  .pipe(Effect.orElseSucceed(() => true)),
-                project: decision.leaving.project?.title ?? null,
-                otherThreads: decision.leaving.otherThreads.map((other) => other.title),
-              },
-      };
       const now = yield* DateTime.now;
       const command = {
         type: "thread.project.move" as const,
@@ -312,7 +283,25 @@ export const make = Effect.gen(function* () {
         members,
         folder,
         folderChanged: (yield* resolve(previousFolder)) !== (yield* resolve(folder)),
-        receipt,
+        receipt: {
+          folder,
+          previousFolder,
+          project: project.title,
+          previousProject: previousProject.title,
+          members: decision.members.slice(1).map((member) => member.title),
+          clearedBranch: moving?.branch ?? null,
+          pullRequest: tracked === null ? null : { number: tracked.number, url: tracked.url },
+          leftFolder:
+            decision.leaving === null
+              ? null
+              : {
+                  exists: yield* fileSystem
+                    .exists(previousFolder)
+                    .pipe(Effect.orElseSucceed(() => true)),
+                  project: decision.leaving.project?.title ?? null,
+                  otherThreads: decision.leaving.otherThreads.map((other) => other.title),
+                },
+        },
         now,
         idAllocator,
       }).pipe(Effect.mapError(fail("Could not plan the move.")));
@@ -334,7 +323,14 @@ export const make = Effect.gen(function* () {
     });
     return yield* worktreePath === null
       ? commit
-      : commit.pipe(Effect.onError(() => removeEmptyFolder(worktreePath)));
+      : commit.pipe(
+          Effect.onError(() =>
+            Effect.tryPromise({
+              try: () => NodeFS.promises.rmdir(worktreePath),
+              catch: fail("Could not remove the scratch folder."),
+            }).pipe(Effect.ignore),
+          ),
+        );
   });
 
   const move: ThreadMoveService["Service"]["move"] = Effect.fn("ThreadMoveService.move")(

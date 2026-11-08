@@ -103,6 +103,12 @@ export const layerExecutor: Layer.Layer<
     return OrchestrationEffectExecutorV2.of({
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
         const willRetry = options?.willRetry ?? false;
+        const executionError = (cause: unknown) =>
+          new OrchestrationEffectExecutionError({
+            effectId: effect.id,
+            effectType: effect.request.type,
+            cause,
+          });
         switch (effect.request.type) {
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
@@ -582,28 +588,11 @@ export const layerExecutor: Layer.Layer<
             return ClaudeSessionRelocation.relocateClaudeSessionStorage(
               effect.threadId,
               effect.request,
-            ).pipe(
-              Effect.provideContext(relocationContext),
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationEffectExecutionError({
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    cause,
-                  }),
-              ),
-            );
+            ).pipe(Effect.provideContext(relocationContext), Effect.mapError(executionError));
           case "scheduled-tasks.move":
-            return resourceCleanup.moveScheduledTasks(effect.request).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationEffectExecutionError({
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    cause,
-                  }),
-              ),
-            );
+            return resourceCleanup
+              .moveScheduledTasks(effect.request)
+              .pipe(Effect.mapError(executionError));
         }
       }),
     });

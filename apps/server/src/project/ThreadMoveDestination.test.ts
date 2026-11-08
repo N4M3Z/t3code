@@ -17,6 +17,14 @@ import type { PlatformError } from "effect/PlatformError";
 import type * as Scope from "effect/Scope";
 
 import {
+  member,
+  moved,
+  namedProject,
+  namedThread,
+  needsProject,
+  refusal,
+} from "./ThreadMove.testkit.ts";
+import {
   collectMoveSet,
   decideThreadMove,
   type ThreadMoveDecisionInput,
@@ -164,15 +172,18 @@ type Options = Partial<ThreadMoveDecisionInput> & {
 };
 type Setup = Options | ((world: World) => Options);
 type Records = Effect.Success<ReturnType<ThreadMoveProbes["threadRecords"]>>;
+type Flags = Pick<ThreadMoveInput, "addProject" | "confirm">;
 
-const request = (
-  threadId: string,
-  destination: string | null,
-  flags?: Pick<ThreadMoveInput, "addProject" | "confirm">,
-): ThreadMoveInput => ({ threadId: ThreadId.make(threadId), destination, ...flags });
+const request = (threadId: string, destination: string | null, flags?: Flags): ThreadMoveInput => ({
+  threadId: ThreadId.make(threadId),
+  destination,
+  ...flags,
+});
 
 const idle = { runs: [], runtimeRequests: [] };
 const running = { runs: [{ status: "running" }], runtimeRequests: [] };
+const pending = { runs: [], runtimeRequests: [{ status: "pending" }] };
+const probeFailed = Effect.fail(new ThreadMoveError({ message: "probe failed" }));
 
 const decide = (world: World, input: ThreadMoveInput, setup: Setup = {}) =>
   Effect.gen(function* () {
@@ -217,35 +228,28 @@ const onlyFor =
 const records = (threadId: string, value: Records) => ({
   probes: { threadRecords: onlyFor(threadId, Effect.succeed(value), Effect.succeed(idle)) },
 });
-const background = (threadId: string, value: Effect.Effect<boolean, ThreadMoveError>) => ({
-  probes: { hasBackgroundWork: onlyFor(threadId, value, Effect.succeed(false)) },
+const background = (
+  threadId: string,
+  value: boolean | Effect.Effect<boolean, ThreadMoveError>,
+) => ({
+  probes: {
+    hasBackgroundWork: onlyFor(
+      threadId,
+      typeof value === "boolean" ? Effect.succeed(value) : value,
+      Effect.succeed(false),
+    ),
+  },
 });
 const patch = (world: World, threadId: string, fields: Partial<ThreadMoveShell>) => ({
   threads: world.threads.map((shell) => (shell.id === threadId ? { ...shell, ...fields } : shell)),
 });
 
-const namedProject = (id: string) => ({ projectId: id, title: id });
-const namedThread = (id: string) => ({ threadId: id, title: id });
-const matching = (text: string | RegExp) =>
-  typeof text === "string" ? expect.stringContaining(text) : expect.stringMatching(text);
-const refusal = (reason?: string | RegExp, named?: Record<string, unknown>) => ({
-  _tag: "refused",
-  ...(reason === undefined ? {} : { reason: matching(reason) }),
-  ...named,
-});
-const member = (id: string, reason?: string | RegExp) =>
-  refusal(reason, { thread: namedThread(id) });
-const worktreeRefused = refusal("inside a worktree");
-const moved = (folder: string) => ({ _tag: "moved", folder, members: [] });
+const named = (...ids: ReadonlyArray<string>) => ({ projects: ids.map(namedProject) });
+const worktree = refusal("inside a worktree");
 const movesTo = (projectId: string) => ({
   _tag: "move",
   destination: { _tag: "project", project: expect.objectContaining({ id: projectId }) },
   leaving: null,
-});
-const needsProject = (folder: string, nestedIn?: string) => ({
-  _tag: "needs-project",
-  folder,
-  ...(nestedIn === undefined ? {} : { nestedIn: namedProject(nestedIn) }),
 });
 const failure = (target: string) => ({
   _tag: "ThreadMoveError",
@@ -253,84 +257,39 @@ const failure = (target: string) => ({
 });
 
 it.effect.each<
-  readonly [
-    name: string,
-    thread: string,
-    typed: string | (() => string),
-    expected: object | ((folder: string) => object),
-  ]
+  readonly [string, string, string | (() => string), object | ((folder: string) => object)]
 >([
-  ["rule 1: the thread's own folder moves with no members", "t1", "projA", moved],
-  ["rule 1: the own worktree changes nothing and asks nothing", "t2", "W", moved],
-  [
-    "rule 1: the own folder that is another project's root is refused",
-    "t3",
-    "PW",
-    refusal("no folder change is not supported", { projects: [namedProject("P")] }),
-  ],
+  ["rule 1: own folder moves with no members", "t1", "projA", moved],
+  ["rule 1: own worktree changes nothing, asks nothing", "t2", "W", moved],
+  ["rule 1: own folder rooting project P", "t3", "PW", refusal("no folder change", named("P"))],
   ["rule 2: the scratch root points to /no", "t1", "scratch", refusal("/no")],
-  ["rule 3: a project root moves there", "t1", "projB", movesTo("B")],
+  ["rule 3: a project root", "t1", "projB", movesTo("B")],
   ["rule 3: a relative path starts at the thread's folder", "t1", () => "../projB", movesTo("B")],
   ["rule 3: ~ expands to the home folder", "t1", () => "~/projB", movesTo("B")],
-  ["rule 3: a symlink spelling of the root matches", "t1", "link-B", movesTo("B")],
-  ["rule 3: a promoted project moves there", "t1", "scratch/promoted", movesTo("Promoted")],
-  ["rule 3: a root inside a worktree moves there", "t1", "worktree/proot", movesTo("InWorktree")],
+  ["rule 3: a symlink spelling of the root", "t1", "link-B", movesTo("B")],
+  ["rule 3: a promoted project", "t1", "scratch/promoted", movesTo("Promoted")],
+  ["rule 3: a root inside a worktree", "t1", "worktree/proot", movesTo("InWorktree")],
+  ["rule 3: two matches are named", "t1", "dup", refusal('"Dup1", "Dup2"', named("Dup1", "Dup2"))],
+  ["rule 3: archived match", "t1", "archived", refusal("Unarchive", named("Archived"))],
+  ["rule 4: scratch folder, /no only", "t1", "scratch/other", refusal(/^(?!.*Turn into project)/)],
+  ["rule 4: from No project, also Turn into", "tn", "scratch/other", refusal("Turn into project")],
+  ["rule 5: a folder in a linked git worktree", "t1", "worktree/sub", worktree],
+  ["rule 5: the linked worktree itself", "t1", "worktree", worktree],
+  ["rule 5: a folder in a jj workspace", "t1", "jjws/sub", worktree],
+  ["rule 5: a folder in a default jj workspace", "t1", "jjdefault/sub", worktree],
+  ["rule 5: the managed worktrees directory itself", "t1", "managed", worktree],
+  ["rule 5: under a managed worktrees directory", "t1", "managed/repo/branch/sub", worktree],
+  ["rule 5: unreadable .git fails, naming it", "t1", "locked-git", (f) => failure(`${f}/.git`)],
   [
-    "rule 3: two matching projects are named",
-    "t1",
-    "dup",
-    refusal('"Dup1", "Dup2"', { projects: [namedProject("Dup1"), namedProject("Dup2")] }),
-  ],
-  [
-    "rule 3: an archived match asks to unarchive it",
-    "t1",
-    "archived",
-    refusal("Unarchive", { projects: [namedProject("Archived")] }),
-  ],
-  [
-    "rule 4: another scratch folder points to /no",
-    "t1",
-    "scratch/other",
-    { _tag: "refused", reason: expect.not.stringContaining("Turn into project") },
-  ],
-  [
-    "rule 4: from No project it also points to Turn into project",
-    "tn",
-    "scratch/other",
-    refusal("Turn into project"),
-  ],
-  ["rule 5: a folder in a linked git worktree", "t1", "worktree/sub", worktreeRefused],
-  ["rule 5: the linked worktree itself", "t1", "worktree", worktreeRefused],
-  ["rule 5: a folder in a jj workspace", "t1", "jjws/sub", worktreeRefused],
-  ["rule 5: a folder in a default jj workspace", "t1", "jjdefault/sub", worktreeRefused],
-  ["rule 5: the managed worktrees directory itself", "t1", "managed", worktreeRefused],
-  ["rule 5: under a managed worktrees directory", "t1", "managed/repo/branch/sub", worktreeRefused],
-  [
-    "rule 5: an unreadable .git fails the decision, naming it",
-    "t1",
-    "locked-git",
-    (folder) => failure(`${folder}/.git`),
-  ],
-  [
-    "rule 5: an unreadable .jj/repo fails the decision, naming it",
+    "rule 5: unreadable .jj/repo fails, naming it",
     "t1",
     "locked-jj",
-    (folder) => failure(`${folder}/.jj/repo`),
+    (f) => failure(`${f}/.jj/repo`),
   ],
   ["rule 6: a folder with no project needs one", "t1", "plain", needsProject],
   ["rule 6: a subfolder of A names A", "t1", "projA/nested", (folder) => needsProject(folder, "A")],
-  [
-    "rule 6: a submodule under worktrees/ needs a project",
-    "t1",
-    "main/worktrees/lib",
-    needsProject,
-  ],
-  [
-    "rule 6: a checkout whose git dir is under worktrees/ needs one",
-    "t1",
-    "separate",
-    needsProject,
-  ],
+  ["rule 6: a submodule under worktrees/ needs one", "t1", "main/worktrees/lib", needsProject],
+  ["rule 6: a checkout whose git dir is under worktrees/", "t1", "separate", needsProject],
   ["rule 6: a deleted project's root needs a project", "t1", "deleted", needsProject],
   ["a missing folder is refused", "t1", "missing", refusal("not an existing folder")],
   ["a file is refused", "t1", "afile", refusal("not an existing folder")],
@@ -361,22 +320,22 @@ const competingScratch = (world: World) => ({
   projects: [...world.projects, project("No project 2", world.at("link-scratch"))],
 });
 
-it.effect.each<readonly [name: string, thread: string, setup: Setup, expected: object]>([
+it.effect.each<readonly [string, string, Setup, object]>([
   [
-    "refuses a thread already in No project, whatever else resolves to the scratch root",
+    "refuses a thread already in No project first",
     "tn",
     competingScratch,
     refusal("already in No project"),
   ],
   ["refuses without scratch folders", "t1", { scratchRoot: undefined }, refusal("unavailable")],
   [
-    "refuses when two projects resolve to the scratch root, naming them",
+    "names two projects at the scratch root",
     "t1",
     competingScratch,
-    refusal(undefined, { projects: [namedProject("No project"), namedProject("No project 2")] }),
+    refusal(undefined, named("No project", "No project 2")),
   ],
   [
-    "refuses an archived No project and asks to unarchive it",
+    "asks to unarchive an archived No project",
     "t1",
     (world) => ({
       projects: world.projects.map((candidate) =>
@@ -385,10 +344,10 @@ it.effect.each<readonly [name: string, thread: string, setup: Setup, expected: o
           : candidate,
       ),
     }),
-    refusal("Unarchive", { projects: [namedProject("No project")] }),
+    refusal("Unarchive", named("No project")),
   ],
   [
-    "moves a root thread at once into No project",
+    "moves a root thread at once",
     "t1",
     {},
     {
@@ -398,7 +357,7 @@ it.effect.each<readonly [name: string, thread: string, setup: Setup, expected: o
     },
   ],
   [
-    "asks first when the thread leaves a worktree, with a new scratch folder as destination",
+    "asks first when leaving a worktree, to a new scratch folder",
     "t2",
     {},
     { _tag: "confirm", to: null, wayBack: "add-project" },
@@ -443,41 +402,25 @@ it.effect(
     ),
 );
 
-type EligibilityCase = readonly [name: string, setup: Setup, expected: object];
+type EligibilityCase = readonly [string, Setup, object];
 
 it.effect.each<EligibilityCase>([
+  ["a running turn", records("t1-sub", running), member("t1-sub", "Try again when the turn ends")],
+  ["a pending request", records("t1-side", pending), member("t1-side")],
+  ["background work", background("t1-side", true), member("t1-side", "background work")],
+  ["a failing probe", background("t1-side", probeFailed), member("t1-side", "background work")],
   [
-    "a member with a running turn, saying to try again when it ends",
-    records("t1-sub", running),
-    member("t1-sub", "Try again when the turn ends"),
-  ],
-  [
-    "a member with a pending request",
-    records("t1-side", { runs: [], runtimeRequests: [{ status: "pending" }] }),
-    member("t1-side"),
-  ],
-  [
-    "a member whose session reports background work",
-    background("t1-side", Effect.succeed(true)),
-    member("t1-side", "background work"),
-  ],
-  [
-    "a member whose background-work probe fails",
-    background("t1-side", Effect.fail(new ThreadMoveError({ message: "probe failed" }))),
-    member("t1-side", "background work"),
-  ],
-  [
-    "a member working in another folder",
+    "another folder",
     (world) => patch(world, "t1-sub", { worktreePath: world.at("W") }),
     member("t1-sub", "another folder"),
   ],
   [
-    "a member whose driver lacks supportsFolderMove",
+    "a driver without supportsFolderMove",
     (world) => patch(world, "t1-sub", { providerInstanceId: ProviderInstanceId.make("cursor") }),
     member("t1-sub", "does not support a folder move"),
   ],
   [
-    "a member whose provider instance the destination project disables",
+    "a provider instance the destination project disables",
     {
       settings: {
         providerInstances: {},
@@ -491,21 +434,21 @@ it.effect.each<EligibilityCase>([
     member("t1", "disables"),
   ],
   ...["", "  ", " /config", ".claude-config"].map((configDir): EligibilityCase => [
-    `a Claude instance with CLAUDE_CONFIG_DIR ${JSON.stringify(configDir)}`,
+    `CLAUDE_CONFIG_DIR ${JSON.stringify(configDir)}`,
     claudeAt("2.1.223", configDir),
     member("t1", `CLAUDE_CONFIG_DIR ("${configDir}") is not an absolute path`),
   ]),
   ["nothing when CLAUDE_CONFIG_DIR is absolute", claudeAt("2.1.223", "/config"), movesTo("B")],
   [
-    "a Claude instance at 2.1.222, naming the version and the provider refresh",
+    "Claude Code 2.1.222, naming it",
     claudeAt("2.1.222"),
-    member("t1", /Claude Code 2\.1\.222.*Refresh the providers/),
+    member("t1", /2\.1\.222.*Refresh the providers/),
   ],
-  ["nothing for a newer Claude instance", claudeAt("2.2.0"), movesTo("B")],
+  ["nothing for a newer Claude Code", claudeAt("2.2.0"), movesTo("B")],
   ["an unparsed Claude version", claudeAt("garbage"), member("t1", "Claude Code garbage")],
-  ["a Claude instance with no version", claudeAt(null), member("t1", "unknown version")],
+  ["no Claude version", claudeAt(null), member("t1", "unknown version")],
   [
-    "the member on an older instance when two Claude instances differ",
+    "the member on the older of two Claude instances",
     (world) => ({
       ...patch(world, "t1-side", { providerInstanceId: ProviderInstanceId.make("claude-two") }),
       providerInstances: instances(
@@ -539,10 +482,10 @@ it.effect.each<EligibilityCase>([
 
 it.effect.each<
   readonly [
-    name: string,
-    thread: string,
-    expected: (at: World["at"]) => object,
-    before?: (world: World) => Effect.Effect<void, PlatformError, FileSystem.FileSystem>,
+    string,
+    string,
+    (at: World["at"]) => object,
+    ((world: World) => Effect.Effect<void, PlatformError, FileSystem.FileSystem>)?,
   ]
 >([
   [
@@ -558,7 +501,7 @@ it.effect.each<
     }),
   ],
   [
-    "leaving a worktree that is a project's root names the project and says /cd brings it back",
+    "leaving a project's root worktree names the project, and /cd brings it back",
     "t3",
     (at) => ({
       _tag: "confirm",
@@ -601,14 +544,7 @@ it.effect.each<
   ),
 );
 
-it.effect.each<
-  readonly [
-    name: string,
-    flags: Pick<ThreadMoveInput, "addProject" | "confirm">,
-    setup: Setup,
-    expected: (at: World["at"]) => object,
-  ]
->([
+it.effect.each<readonly [string, Flags, Setup, (at: World["at"]) => object]>([
   ["asks for the project before the confirmation", {}, {}, (at) => needsProject(at("plain"))],
   [
     "asks for the confirmation once the project question is answered",

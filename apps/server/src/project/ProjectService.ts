@@ -279,7 +279,6 @@ export const make = Effect.gen(function* () {
         error: encodeProjectCommandRejection(planned.failure),
       });
     });
-    // Deletion holds the project lock from its read of the project's threads through this commit.
     const receipt = yield* (
       command.type === "project.delete"
         ? planAndCommit

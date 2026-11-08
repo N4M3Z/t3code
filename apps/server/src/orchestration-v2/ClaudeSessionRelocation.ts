@@ -33,6 +33,7 @@ const errnoCode = (error: PlatformError.PlatformError) =>
   (error.cause as NodeJS.ErrnoException | undefined)?.code;
 const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
 type CopyDirectory = (from: string, to: string) => Effect.Effect<void, PlatformError.PlatformError>;
+const projectDirOverride = /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)[A-Za-z0-9_-]{1,64}$/i;
 
 export function claudeConfigDirRefusal(path: Path.Path, environment: NodeJS.ProcessEnv) {
   const configDir = environment.CLAUDE_CONFIG_DIR;
@@ -43,14 +44,7 @@ export function claudeConfigDirRefusal(path: Path.Path, environment: NodeJS.Proc
 
 export function claudeProjectDirName(folder: string, environment: NodeJS.ProcessEnv): string {
   const { CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: override } = environment;
-  if (
-    configDir &&
-    override !== undefined &&
-    /^[A-Za-z0-9_-]{1,64}$/.test(override) &&
-    !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(override)
-  ) {
-    return override;
-  }
+  if (configDir && override && projectDirOverride.test(override)) return override;
   const name = folder.replace(/[^a-zA-Z0-9]/g, "-");
   if (name.length <= 200) return name;
   let hash = 0;
@@ -59,7 +53,7 @@ export function claudeProjectDirName(folder: string, environment: NodeJS.Process
 }
 
 // Claude Code 2.1.319's relocateSessionTranscript; the SDK has no relocation call.
-export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.relocateTranscript")(
+const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.relocateTranscript")(
   function* (input: {
     readonly environment: NodeJS.ProcessEnv;
     readonly sessionId: string;
@@ -72,6 +66,8 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
     const configDir =
       input.environment.CLAUDE_CONFIG_DIR ?? path.join(yield* HostProcess.HomeDirectory, ".claude");
     const projectsDir = path.join(configDir.normalize("NFC"), "projects");
+    const projectDir = (folder: string) =>
+      path.join(projectsDir, claudeProjectDirName(folder, input.environment));
     const resolveFolder = (folder: string) =>
       fileSystem.realPath(folder).pipe(
         Effect.orElseSucceed(() => path.resolve(folder)),
@@ -134,11 +130,8 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
       );
 
     const relocatedCwd = yield* resolveFolder(input.newFolder);
-    const oldDir = path.join(
-      projectsDir,
-      claudeProjectDirName(yield* resolveFolder(input.oldFolder), input.environment),
-    );
-    const newDir = path.join(projectsDir, claudeProjectDirName(relocatedCwd, input.environment));
+    const oldDir = projectDir(yield* resolveFolder(input.oldFolder));
+    const newDir = projectDir(relocatedCwd);
     const oldFile = path.join(oldDir, `${input.sessionId}.jsonl`);
     const newFile = path.join(newDir, `${input.sessionId}.jsonl`);
     const record = encodeJson({ type: "relocated", sessionId: input.sessionId, relocatedCwd });

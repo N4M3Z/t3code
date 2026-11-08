@@ -7046,7 +7046,6 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           projectionStore.getThreadSnapshotWindow(threadId, { rowLimit, anchorItemId }),
           (snapshot) => shape(snapshot.projection.visibleTurnItems),
         );
-      // The full projection, the activity page and the bounded windows of 2 and 3 rows agree.
       const expectFork = Effect.fnUntraced(function* (
         fork: ThreadId,
         expected: ReadonlyArray<string | undefined>,

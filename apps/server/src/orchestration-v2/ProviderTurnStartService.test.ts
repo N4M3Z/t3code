@@ -1472,7 +1472,6 @@ effectIt.effect.each([
     );
     if (row.relocation !== undefined) {
       yield* Effect.race(Deferred.await(harness.relocationAwaited), Fiber.await(start));
-      // Only a Codex parent forks past an unsettled relocation.
       expect(harness.relocationsAtFork).toEqual(
         row.driver === "codex" ? [["relocate-parent"]] : [],
       );

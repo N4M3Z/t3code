@@ -67,7 +67,7 @@ const setup = Effect.fnUntraced(function* () {
   const configDir = path.join(root, "config");
   const oldFolder = path.join(root, "repo-a");
   // Decomposed é: Claude names the folder from its NFC form on macOS.
-  const newFolder = path.join(root, "café");
+  const newFolder = path.join(root, "cafe\u0301");
   yield* fs.makeDirectory(oldFolder);
   yield* fs.makeDirectory(newFolder);
   const relocatedCwd = (yield* fs.realPath(newFolder)).normalize("NFC");

@@ -76,7 +76,6 @@ it("takes the folder of the latest run the provider accepted that still stands",
   assert.strictEqual(latest([r1, run(2, { restartContinuationOfRunId: r1.id })]), "/folder/1");
   assert.strictEqual(latest([r1, r2], { compactions: [r2] }), "/folder/1");
   assert.strictEqual(latest([run(1, { completedAt: DateTime.makeUnsafe(3000) }), r2]), "/folder/1");
-  // A /goal run is skipped only when the driver that ran it parses /goal.
   const goal = { accepted: [r1, r2], goals: [r2] };
   assert.strictEqual(latest([r1, r2, starting], { ...goal, onOpencode: [r1, r2] }), "/folder/2");
   assert.strictEqual(latest([r1, r2, starting], { ...goal, onOpencode: [starting] }), "/folder/1");

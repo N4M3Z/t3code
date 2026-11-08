@@ -3413,14 +3413,23 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   ),
                 ),
               );
+              const offer: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"] = (
+                message,
+                onQueued,
+              ) =>
+                (options?.offer?.(message, onQueued) ?? Effect.void).pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      offeredMessages.push(message);
+                    }),
+                  ),
+                  Effect.andThen(changes.notify),
+                );
               if (options?.freshQueueOnReopen === true && processQueues.length > 0) {
                 processQueues.push(processMessages);
                 return {
                   messages,
-                  offer: (message: SDKUserMessage) =>
-                    Effect.sync(() => {
-                      offeredMessages.push(message);
-                    }).pipe(Effect.andThen(changes.notify)),
+                  offer,
                   setModel: () => Effect.void,
                   applyFlagSettings: () => Effect.void,
                   setPermissionMode: (mode) =>
@@ -3442,15 +3451,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               processQueues.push(sdkMessages);
               return {
                 messages,
-                offer: (message, onQueued) =>
-                  (options?.offer?.(message, onQueued) ?? Effect.void).pipe(
-                    Effect.andThen(
-                      Effect.sync(() => {
-                        offeredMessages.push(message);
-                      }),
-                    ),
-                    Effect.andThen(changes.notify),
-                  ),
+                offer,
                 setModel: (model) =>
                   Effect.sync(() => {
                     liveSelectionChanges.push({ model });
@@ -3716,6 +3717,111 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               ...(completes ? [`attempt-claude-pending:${exits ? "failed" : "completed"}`] : []),
             ],
           );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
+    "keeps a query exit's failed record last wherever the running record's publisher yields",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let offerPending = yield* Deferred.make<void>();
+          let pendingOffer = yield* Deferred.make<void>();
+          let lateOffer = true;
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            offer: (_, onQueued) =>
+              lateOffer
+                ? Effect.sync(() => onQueued?.()).pipe(
+                    Effect.andThen(Deferred.succeed(offerPending, undefined)),
+                    Effect.andThen(Deferred.await(pendingOffer)),
+                  )
+                : Effect.void,
+          });
+          const base = yield* Scheduler.Scheduler;
+          const parked = yield* Queue.unbounded<() => void>();
+          let yieldAfter = -1;
+          let park = false;
+          // Yields the publisher once, `yieldAfter` operations after its offer returns, and holds that continuation.
+          const scheduler: Scheduler.Scheduler = {
+            executionMode: base.executionMode,
+            shouldYield: (fiber) => {
+              if (yieldAfter < 0 || fiber.currentOpCount <= yieldAfter)
+                return base.shouldYield(fiber);
+              yieldAfter = -1;
+              park = true;
+              return true;
+            },
+            makeDispatcher: () => {
+              const dispatcher = base.makeDispatcher();
+              return {
+                scheduleTask: (task, priority) => {
+                  if (!park) return dispatcher.scheduleTask(task, priority);
+                  park = false;
+                  Queue.offerUnsafe(parked, task);
+                },
+                flush: () => dispatcher.flush(),
+              };
+            },
+          };
+          const now = yield* DateTime.now;
+          const turnInput = (attempt: string, providerTurnOrdinal: number) =>
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make(attempt),
+              text: "Continue.",
+              attachments: [],
+              providerTurnOrdinal,
+            });
+          const records = (attempt?: string) =>
+            harness.events.flatMap((event) =>
+              event.type === "provider_turn.updated" &&
+              (attempt === undefined || event.providerTurn.runAttemptId === attempt)
+                ? [`${event.providerTurn.runAttemptId}:${event.providerTurn.status}`]
+                : [],
+            );
+          const expected: Array<string> = [];
+          // Sweep every yield point after the offer returns until the record precedes the exit.
+          let step = 0;
+          for (; ; step++) {
+            const attempt = `attempt-claude-${step}`;
+            const pending = yield* harness.runtime
+              .startTurn(turnInput(attempt, step + 1))
+              .pipe(
+                Effect.provideService(Scheduler.Scheduler, scheduler),
+                Effect.exit,
+                Effect.forkChild,
+              );
+            yield* Deferred.await(offerPending);
+            yieldAfter = step;
+            yield* Deferred.succeed(pendingOffer, undefined);
+            const resume = yield* Queue.take(parked);
+            yield* Queue.shutdown(harness.processQueues.at(-1)!);
+            yield* harness.awaitTerminal(step + 1);
+            const beforeResume = records(attempt);
+            expected.push(...beforeResume);
+            yield* Effect.sync(resume);
+            assert.isTrue(Exit.isSuccess(yield* Fiber.join(pending)));
+            offerPending = yield* Deferred.make<void>();
+            pendingOffer = yield* Deferred.make<void>();
+            if (beforeResume.includes(`${attempt}:running`)) break;
+          }
+          lateOffer = false;
+          yield* harness.runtime.startTurn(turnInput("attempt-claude-reopened", step + 2));
+          yield* harness.until(() => records("attempt-claude-reopened").length > 0);
+          assert.deepEqual(records(), [...expected, "attempt-claude-reopened:running"]);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(

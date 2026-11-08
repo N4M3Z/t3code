@@ -11401,14 +11401,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
               }
             });
-            const recordRunningTurn = Effect.gen(function* () {
-              // A turn that settled before its offer returned keeps its terminal record last.
+            const recordRunningTurn = Effect.sync(() => {
+              // A turn that settled before its offer returned keeps its terminal record last: one
+              // step, so a query exit cannot settle the turn between the check and the record.
               if (
-                (yield* Ref.get(activeTurn)) !== context ||
-                (yield* Ref.get(queryContext)) !== querySession
+                Ref.getUnsafe(activeTurn) !== context ||
+                Ref.getUnsafe(queryContext) !== querySession
               )
                 return;
-              yield* emitProviderEvent({
+              Queue.offerUnsafe(events, {
                 type: "provider_turn.updated",
                 driver: CLAUDE_PROVIDER,
                 providerTurn: providerTurnPayload({

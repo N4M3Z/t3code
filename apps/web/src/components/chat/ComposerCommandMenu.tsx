@@ -50,6 +50,8 @@ export type ComposerCommandItem =
       command: ComposerSlashCommand;
       label: string;
       description: string;
+      /** The description then says why the command cannot run now. */
+      disabled?: boolean;
     }
   | {
       id: string;
@@ -194,6 +196,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       value={props.item.id}
       data-composer-item-id={props.item.id}
       active={props.isActive}
+      disabled={props.item.type === "slash-command" && props.item.disabled === true}
       onMouseMove={() => {
         if (!props.isActive) props.onHighlight(props.item.id);
       }}

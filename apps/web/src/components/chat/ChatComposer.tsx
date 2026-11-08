@@ -212,6 +212,7 @@ import { ComposerFooterPrimaryActions } from "./ComposerFooterControls";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
+import { folderMoveMenuBlockReason } from "./composerSend.logic";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
 import { getComposerPromptInjectionState, getComposerReasoningStep } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
@@ -390,6 +391,8 @@ export interface ChatComposerProps {
   sideChatAvailable?: boolean;
   sideChatDisabledReason?: string | null;
   folderMoveAvailable?: boolean | undefined;
+  /** The server has not seen the thread yet, so `/cd` and `/no` cannot move it. */
+  isLocalDraftThread?: boolean | undefined;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   onFreshSession?: (() => void) | undefined;
   environmentUnavailable: {
@@ -1164,6 +1167,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     sideChatAvailable: props.sideChatAvailable === true,
     sideChatDisabledReason: props.sideChatDisabledReason ?? null,
     folderMoveAvailable: props.folderMoveAvailable === true,
+    folderMoveDisabledReason: folderMoveMenuBlockReason({
+      isLocalDraftThread: props.isLocalDraftThread === true,
+      editingQueuedMessage: isEditingQueuedMessage,
+      requestPending: activePendingProgress !== null || pendingApprovals.length > 0,
+      running: phase === "running",
+    }),
     freshSessionAvailable: props.onFreshSession !== undefined,
     compactSlashCommandAvailable,
     selectedProvider,
@@ -1953,14 +1962,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
       if (["side", "btw", "cd", "no"].includes(item.command)) {
-        if (item.command !== "cd" && item.command !== "no" && props.sideChatDisabledReason) return;
+        const movesFolder = item.command === "cd" || item.command === "no";
+        if (movesFolder ? item.disabled : props.sideChatDisabledReason) return;
+        // `/no` takes no argument, so choosing it runs it.
+        const runsNow = item.command === "no";
         const applied = applyPromptReplacement(
           trigger.rangeStart,
           trigger.rangeEnd,
-          `/${item.command} `,
+          runsNow ? "/no" : `/${item.command} `,
           { expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd) },
         );
         if (applied) setComposerHighlightedItemId(null);
+        if (applied && runsNow) composerFormRef.current?.requestSubmit();
         return;
       }
       if (!planModeUiEnabled) return;

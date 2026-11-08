@@ -100,6 +100,22 @@ export function folderMoveBlockReason(input: {
   return null;
 }
 
+const THREAD_STILL_WORKING = "This thread is still working. Try again when the turn ends.";
+
+/** Why the slash menu shows `/cd` and `/no` as blocked, before the user types the command. */
+export function folderMoveMenuBlockReason(input: {
+  readonly isLocalDraftThread: boolean;
+  readonly editingQueuedMessage: boolean;
+  readonly requestPending: boolean;
+  readonly running: boolean;
+}): string | null {
+  if (input.isLocalDraftThread) return "Choose the project before the first message.";
+  if (input.editingQueuedMessage) return "Save or cancel the queued message edit first.";
+  if (input.requestPending) return "Answer the pending question or approval first.";
+  if (input.running) return THREAD_STILL_WORKING;
+  return null;
+}
+
 export type ThreadMoveQuestion = Extract<ThreadMoveResult, { _tag: "needs-project" | "confirm" }>;
 type ThreadMoveOutcome = Extract<ThreadMoveResult, { _tag: "moved" | "refused" }>;
 

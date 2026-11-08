@@ -17,6 +17,7 @@ import {
   multipleModelSendBlock,
   referencedThreadContexts,
   runThreadMove,
+  folderMoveMenuBlockReason,
   threadMoveDialogCopy,
 } from "./composerSend.logic";
 
@@ -144,6 +145,25 @@ it("folderMoveBlockReason refuses locally in a local draft and with context", ()
   };
   expect(folderMoveBlockReason({ ...ready, isLocalDraftThread: true })).toMatch(/project picker/);
   expect(folderMoveBlockReason({ ...ready, textOnly: false })).toMatch(/attachments/);
+});
+
+it("folderMoveMenuBlockReason names the first thing that blocks a move", () => {
+  const free = {
+    isLocalDraftThread: false,
+    editingQueuedMessage: false,
+    requestPending: false,
+    running: false,
+  };
+  expect(folderMoveMenuBlockReason(free)).toBeNull();
+  expect(folderMoveMenuBlockReason({ ...free, running: true })).toBe(
+    "This thread is still working. Try again when the turn ends.",
+  );
+  expect(folderMoveMenuBlockReason({ ...free, running: true, requestPending: true })).toMatch(
+    /pending question/,
+  );
+  expect(folderMoveMenuBlockReason({ ...free, running: true, isLocalDraftThread: true })).toBe(
+    "Choose the project before the first message.",
+  );
 });
 
 const threadId = ThreadId.make("thread-1");

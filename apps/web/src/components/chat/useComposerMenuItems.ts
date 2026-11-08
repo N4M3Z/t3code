@@ -67,6 +67,7 @@ export function useComposerMenuItems({
   sideChatAvailable,
   sideChatDisabledReason,
   folderMoveAvailable,
+  folderMoveDisabledReason,
   freshSessionAvailable,
   compactSlashCommandAvailable,
   selectedProvider,
@@ -88,6 +89,7 @@ export function useComposerMenuItems({
   readonly sideChatAvailable: boolean;
   readonly sideChatDisabledReason: string | null;
   readonly folderMoveAvailable: boolean;
+  readonly folderMoveDisabledReason: string | null;
   readonly freshSessionAvailable: boolean;
   readonly compactSlashCommandAvailable: boolean;
   readonly selectedProvider: ProviderDriverKind;
@@ -271,9 +273,11 @@ export function useComposerMenuItems({
               command,
               label: `/${command}`,
               description:
-                command === "cd"
+                folderMoveDisabledReason ??
+                (command === "cd"
                   ? "Move this thread to another folder"
-                  : "Move this thread out of its project",
+                  : "Move to No project in a new scratch folder."),
+              disabled: folderMoveDisabledReason !== null,
             }))
           : []),
         ...(freshSessionAvailable

@@ -4,9 +4,14 @@ import { expect, it } from "vite-plus/test";
 
 import { render } from "../../../test/render";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
+import type { ComposerCommandItem } from "./ComposerCommandMenu";
 import { useComposerMenuItems } from "./useComposerMenuItems";
 
-function SlashMenu(props: { folderMoveAvailable: boolean; labels: RefObject<string[] | null> }) {
+function SlashMenu(props: {
+  folderMoveAvailable: boolean;
+  folderMoveDisabledReason?: string;
+  items: RefObject<ComposerCommandItem[] | null>;
+}) {
   const { items } = useComposerMenuItems({
     composerTrigger: { kind: "slash-command", query: "", rangeStart: 0, rangeEnd: 1 },
     environmentId: EnvironmentId.make("env-1"),
@@ -20,6 +25,7 @@ function SlashMenu(props: { folderMoveAvailable: boolean; labels: RefObject<stri
     sideChatAvailable: false,
     sideChatDisabledReason: null,
     folderMoveAvailable: props.folderMoveAvailable,
+    folderMoveDisabledReason: props.folderMoveDisabledReason ?? null,
     freshSessionAvailable: false,
     compactSlashCommandAvailable: false,
     selectedProvider: ProviderDriverKind.make("claudeAgent"),
@@ -29,7 +35,7 @@ function SlashMenu(props: { folderMoveAvailable: boolean; labels: RefObject<stri
     workspaceSkillsScanning: false,
     questionAttachmentTarget: null,
   });
-  useImperativeHandle(props.labels, () => items.map((item) => item.label));
+  useImperativeHandle(props.items, () => items);
   return null;
 }
 
@@ -37,11 +43,26 @@ it.each([
   [false, ["/model", "/review"]],
   [true, ["/model", "/cd", "/no", "/review"]],
 ])("with folder moves %s, the slash menu offers %j", async (folderMoveAvailable, labels) => {
-  const shown: RefObject<string[] | null> = { current: null };
+  const shown: RefObject<ComposerCommandItem[] | null> = { current: null };
   await using _screen = await render(
     <AppAtomRegistryProvider>
-      <SlashMenu folderMoveAvailable={folderMoveAvailable} labels={shown} />
+      <SlashMenu folderMoveAvailable={folderMoveAvailable} items={shown} />
     </AppAtomRegistryProvider>,
   );
-  expect(shown.current).toEqual(labels);
+  expect(shown.current?.map((item) => item.label)).toEqual(labels);
+});
+
+it("shows why a move is blocked on /cd and /no, and disables both", async () => {
+  const shown: RefObject<ComposerCommandItem[] | null> = { current: null };
+  const reason = "Choose the project before the first message.";
+  await using _screen = await render(
+    <AppAtomRegistryProvider>
+      <SlashMenu folderMoveAvailable folderMoveDisabledReason={reason} items={shown} />
+    </AppAtomRegistryProvider>,
+  );
+  const moves = shown.current?.filter((item) => item.label === "/cd" || item.label === "/no");
+  expect(moves).toMatchObject([
+    { description: reason, disabled: true },
+    { description: reason, disabled: true },
+  ]);
 });

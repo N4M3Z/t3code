@@ -100,7 +100,7 @@ export function folderMoveBlockReason(input: {
   return null;
 }
 
-type ThreadMoveQuestion = Extract<ThreadMoveResult, { _tag: "needs-project" | "confirm" }>;
+export type ThreadMoveQuestion = Extract<ThreadMoveResult, { _tag: "needs-project" | "confirm" }>;
 type ThreadMoveOutcome = Extract<ThreadMoveResult, { _tag: "moved" | "refused" }>;
 
 export async function runThreadMove(
@@ -115,26 +115,55 @@ export async function runThreadMove(
   return runThreadMove({ ...input, ...flags }, move, ask);
 }
 
-/** The line ending in "?" is the dialog's title; the other lines are its description. */
-export function threadMoveQuestionText(question: ThreadMoveQuestion): string {
+export interface ThreadMoveDialogCopy {
+  readonly title: string;
+  /** Null when the client does not know the thread's folder. */
+  readonly from: string | null;
+  /** Null for a new scratch folder. */
+  readonly to: string | null;
+  readonly lines: ReadonlyArray<string>;
+  readonly confirmLabel: string;
+}
+
+/** The dialog shows each path once, in its From and To rows, so no line repeats one. */
+export function threadMoveDialogCopy(
+  question: ThreadMoveQuestion,
+  currentFolder: string | null,
+): ThreadMoveDialogCopy {
   if (question._tag === "needs-project") {
-    const nested = question.nestedIn ? ` nested in ${question.nestedIn.title}` : "";
-    return `Create a project${nested} for ${question.folder} and move this thread there?`;
+    return {
+      title: "Create a project and move this thread?",
+      from: currentFolder,
+      to: question.folder,
+      lines: [
+        question.nestedIn
+          ? `The new project is nested in project ${question.nestedIn.title}.`
+          : "This folder has no project yet.",
+      ],
+      confirmLabel: "Create project and move",
+    };
   }
   const wayBack = {
-    cd: `/cd ${question.from} brings it back as a root thread.`,
-    "add-project": `Adding ${question.from} as a project first makes /cd ${question.from} bring the thread back.`,
-    none: "No command brings it back. Turn into project before the move keeps a way back.",
+    cd: "/cd to the From folder brings the thread back as a root thread.",
+    "add-project": "Add the From folder as a project first, and /cd to it brings the thread back.",
+    none: "You cannot return here with /cd. To keep a way back, cancel and use Turn into project first.",
   }[question.wayBack];
-  return [
-    `Move this thread out of ${question.from}?`,
-    `Its next turn runs in ${question.to ?? "a new scratch folder"}.`,
-    question.staysOnDisk,
-    wayBack,
-    question.project && `The folder stays the root of project ${question.project.title}.`,
-    question.otherThreads.length > 0 &&
-      `Still working there: ${question.otherThreads.map((thread) => thread.title).join(", ")}.`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return {
+    title: question.wayBack === "none" ? "Leave this scratch folder?" : "Leave this worktree?",
+    from: question.from,
+    to: question.to,
+    lines: [
+      question.staysOnDisk.replace(`The folder ${question.from} `, "The folder "),
+      wayBack,
+      ...(question.project
+        ? [`The folder stays the root of project ${question.project.title}.`]
+        : []),
+      ...(question.otherThreads.length > 0
+        ? [
+            `Still working there: ${question.otherThreads.map((thread) => thread.title).join(", ")}.`,
+          ]
+        : []),
+    ],
+    confirmLabel: "Move thread",
+  };
 }

@@ -17,7 +17,7 @@ import {
   multipleModelSendBlock,
   referencedThreadContexts,
   runThreadMove,
-  threadMoveQuestionText,
+  threadMoveDialogCopy,
 } from "./composerSend.logic";
 
 const local = EnvironmentId.make("local");
@@ -178,24 +178,34 @@ it("runThreadMove asks each question once, keeps every flag, and stops at a decl
   expect(await runThreadMove(request, async () => refused, ask)).toBe(refused);
 });
 
-it("threadMoveQuestionText names nesting, folder left, destination, way back and threads", () => {
+it("threadMoveDialogCopy names nesting, both folders once, the way back and threads", () => {
   const nested = { ...needsProject, nestedIn: { projectId: ProjectId.make("p"), title: "App" } };
-  expect(threadMoveQuestionText(nested)).toBe(
-    "Create a project nested in App for /repo/app and move this thread there?",
-  );
-  expect(threadMoveQuestionText({ ...confirm, to: null, wayBack: "none" })).toBe(
-    [
-      "Move this thread out of /worktrees/w?",
-      "Its next turn runs in a new scratch folder.",
-      "The worktree stays on disk at /worktrees/w.",
-      "No command brings it back. Turn into project before the move keeps a way back.",
+  expect(threadMoveDialogCopy(nested, "/repo")).toEqual({
+    title: "Create a project and move this thread?",
+    from: "/repo",
+    to: "/repo/app",
+    lines: ["The new project is nested in project App."],
+    confirmLabel: "Create project and move",
+  });
+  const leaving = {
+    ...confirm,
+    staysOnDisk: "The folder /worktrees/w stays on disk with all its files until you remove it.",
+  };
+  expect(threadMoveDialogCopy({ ...leaving, to: null, wayBack: "none" }, null)).toEqual({
+    title: "Leave this scratch folder?",
+    from: "/worktrees/w",
+    to: null,
+    lines: [
+      "The folder stays on disk with all its files until you remove it.",
+      "You cannot return here with /cd. To keep a way back, cancel and use Turn into project first.",
       "Still working there: Fork.",
-    ].join("\n"),
-  );
-  expect(threadMoveQuestionText({ ...confirm, wayBack: "cd" })).toContain(
-    "/cd /worktrees/w brings it back as a root thread.",
-  );
-  expect(threadMoveQuestionText(confirm)).toContain(
-    "Adding /worktrees/w as a project first makes /cd /worktrees/w bring the thread back.",
+    ],
+    confirmLabel: "Move thread",
+  });
+  const worktree = threadMoveDialogCopy(leaving, null);
+  expect(worktree.title).toBe("Leave this worktree?");
+  expect(worktree.lines.join("\n")).not.toContain("/worktrees/w");
+  expect(worktree.lines).toContain(
+    "Add the From folder as a project first, and /cd to it brings the thread back.",
   );
 });

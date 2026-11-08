@@ -90,6 +90,7 @@ async function setup(options: Options) {
       current: {
         getSendContext: () => sendContext,
         resetCursorState: noop,
+        focusAtEnd: noop,
         validateProviderInput: () => true,
       },
     },

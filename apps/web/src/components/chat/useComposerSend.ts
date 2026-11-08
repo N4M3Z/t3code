@@ -59,7 +59,7 @@ import {
   parseFolderMoveCommand,
   parseStandaloneComposerSlashCommand,
 } from "../../composer-logic";
-import { requestConfirmDialog } from "../../confirmDialog";
+import { askThreadMove } from "./threadMoveDialogStore";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { resolvePlanFollowUpSubmission } from "../../proposedPlan";
 import { type ChatMessage } from "../../types";
@@ -102,7 +102,7 @@ import {
   multipleModelSendBlock,
   referencedThreadContexts,
   runThreadMove,
-  threadMoveQuestionText,
+  threadMoveDialogCopy,
 } from "./composerSend.logic";
 import { usePlanFollowUpSend } from "./useProposedPlanSend";
 import { useMultipleModelSend } from "./useMultipleModelSend";
@@ -580,7 +580,13 @@ export function useComposerSend(input: ComposerSendInput) {
           const reason = error instanceof Error ? error.message : "Could not move the thread.";
           return { _tag: "refused", reason };
         },
-        async (question) => (await requestConfirmDialog(threadMoveQuestionText(question))) ?? false,
+        (question) =>
+          askThreadMove(
+            threadMoveDialogCopy(
+              question,
+              activeThread.worktreePath ?? activeProject?.workspaceRoot ?? null,
+            ),
+          ),
       )
         .then((outcome) => {
           if (outcome === null) return;
@@ -599,6 +605,10 @@ export function useComposerSend(input: ComposerSendInput) {
         })
         .finally(() => {
           sendInFlightRef.current = false;
+          // A dialog took the focus; the user goes on typing where they were.
+          if (currentRouteThreadKeyRef.current === routeThreadKey) {
+            composerRef.current?.focusAtEnd();
+          }
         });
       return;
     }

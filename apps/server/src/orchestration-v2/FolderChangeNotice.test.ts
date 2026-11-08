@@ -69,42 +69,31 @@ const latest = (
 
 it("takes the folder of the latest run the provider accepted that still stands", () => {
   const first = run(1);
+  const second = run(2);
+  const starting = run(3, { completedAt: null });
   assert.strictEqual(latest([]), undefined);
   assert.strictEqual(latest([first], { accepted: [] }), undefined);
-  assert.strictEqual(latest([first, run(2), run(3, { status: "rolled_back" })]), "/folder/2");
+  assert.strictEqual(latest([first, second, run(3, { status: "rolled_back" })]), "/folder/2");
   assert.strictEqual(latest([first, run(2, { status: "interrupted" })]), "/folder/2");
-  assert.strictEqual(latest([first, run(2)], { accepted: [first] }), "/folder/1");
+  assert.strictEqual(latest([first, second], { accepted: [first] }), "/folder/1");
   assert.strictEqual(latest([first, run(2, { cwd: undefined })]), "/folder/1");
   assert.strictEqual(
     latest([first, run(2, { restartContinuationOfRunId: first.id })]),
     "/folder/1",
   );
-  const compaction = run(2);
-  assert.strictEqual(latest([first, compaction], { compactions: [compaction] }), "/folder/1");
+  assert.strictEqual(latest([first, second], { compactions: [second] }), "/folder/1");
   assert.strictEqual(
-    latest([run(1, { completedAt: DateTime.makeUnsafe(3000) }), run(2)]),
+    latest([run(1, { completedAt: DateTime.makeUnsafe(3000) }), second]),
     "/folder/1",
   );
-});
-
-it("skips a /goal run only when the driver that ran it parses /goal", () => {
-  const first = run(1);
-  const goal = run(2);
-  const starting = run(3, { completedAt: null });
+  // A /goal run is skipped only when the driver that ran it parses /goal.
+  const goal = { accepted: [first, second], goals: [second] };
   assert.strictEqual(
-    latest([first, goal, starting], {
-      accepted: [first, goal],
-      goals: [goal],
-      onOpencode: [first, goal],
-    }),
+    latest([first, second, starting], { ...goal, onOpencode: [first, second] }),
     "/folder/2",
   );
   assert.strictEqual(
-    latest([first, goal, starting], {
-      accepted: [first, goal],
-      goals: [goal],
-      onOpencode: [starting],
-    }),
+    latest([first, second, starting], { ...goal, onOpencode: [starting] }),
     "/folder/1",
   );
 });
@@ -142,40 +131,35 @@ it.effect(
       yield* fileSystem.makeDirectory(folder);
       yield* fileSystem.makeDirectory(other);
       yield* fileSystem.symlink(folder, link);
-
-      assert.strictEqual(yield* folderChangeNote(fileSystem, undefined, folder), "");
-      assert.strictEqual(yield* folderChangeNote(fileSystem, folder, link), "");
-      assert.strictEqual(
-        yield* folderChangeNote(fileSystem, folder, other),
-        `The working folder changed from ${JSON.stringify(folder)} to ${JSON.stringify(other)}.`,
-      );
-      assert.strictEqual(
-        yield* folderChangeNote(fileSystem, removed, folder),
-        `The working folder changed from ${JSON.stringify(removed)} to ${JSON.stringify(folder)}.`,
-      );
-      assert.strictEqual(yield* folderChangeNote(fileSystem, removed, removed), "");
-      assert.strictEqual(
-        yield* folderChangeNote(fileSystem, "/tmp/a\nb", "/tmp/c\u2028d"),
-        'The working folder changed from "/tmp/a\\nb" to "/tmp/c\\u2028d".',
-      );
+      const changed = (from: string, to: string) =>
+        `The working folder changed from ${JSON.stringify(from)} to ${JSON.stringify(to)}.`;
+      for (const [previous, cwd, note] of [
+        [undefined, folder, ""],
+        [folder, link, ""],
+        [folder, other, changed(folder, other)],
+        [removed, folder, changed(removed, folder)],
+        [removed, removed, ""],
+        [
+          "/tmp/a\nb",
+          "/tmp/c\u2028d",
+          'The working folder changed from "/tmp/a\\nb" to "/tmp/c\\u2028d".',
+        ],
+      ] as const) {
+        assert.strictEqual(yield* folderChangeNote(fileSystem, previous, cwd), note);
+      }
+      const denied = FileSystem.makeNoop({
+        realPath: (target) =>
+          Effect.fail(
+            PlatformError.systemError({
+              _tag: "PermissionDenied",
+              module: "FileSystem",
+              method: "realPath",
+              pathOrDescriptor: target,
+            }),
+          ),
+      });
+      assert.strictEqual(yield* folderChangeNote(denied, "/a", "/a"), "");
+      const error = yield* Effect.flip(folderChangeNote(denied, "/a", "/w"));
+      assert.strictEqual(error.reason._tag, "PermissionDenied");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
-
-it.effect("propagates a folder resolution error other than a missing folder", () =>
-  Effect.gen(function* () {
-    const fileSystem = FileSystem.makeNoop({
-      realPath: (target) =>
-        Effect.fail(
-          PlatformError.systemError({
-            _tag: "PermissionDenied",
-            module: "FileSystem",
-            method: "realPath",
-            pathOrDescriptor: target,
-          }),
-        ),
-    });
-    assert.strictEqual(yield* folderChangeNote(fileSystem, "/a", "/a"), "");
-    const error = yield* Effect.flip(folderChangeNote(fileSystem, "/a", "/w"));
-    assert.strictEqual(error.reason._tag, "PermissionDenied");
-  }),
 );

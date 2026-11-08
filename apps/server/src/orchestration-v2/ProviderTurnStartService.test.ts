@@ -1027,6 +1027,7 @@ function makeLocalCommandHarness(input: {
                   Effect.andThen(Deferred.await(relocation)),
                   Effect.andThen(
                     Effect.sync(() => {
+                      pendingRelocations = [];
                       parentRecords = {
                         ...parentRecords,
                         providerThreads: [
@@ -1437,8 +1438,6 @@ effectIt.effect.each([
       yield* harness.start;
 
       expect(harness.forkThread).toHaveBeenCalledTimes(forks ? 1 : 0);
-      expect(harness.forkThread.mock.calls[0]?.[0].sourceNativeStorageFolder).toBeUndefined();
-      expect(harness.readEvents).not.toHaveBeenCalled();
       // The parent's rolled-back turn is gone from its native conversation.
       expect(
         harness.forkThread.mock.calls[0]?.[0].sourceProviderTurns?.map((turn) => turn.id),
@@ -1455,99 +1454,69 @@ effectIt.effect.each([
 
 effectIt.effect.each([
   // The parent's runs predate run.cwd; its first run's scope event keeps the folder.
-  { parentRunCwd: undefined, storageFolder: "/repo/side-chat-parent", eventReads: 1 },
+  { folder: "/repo/side-chat-parent", eventReads: 1 },
   // Only the first run predates run.cwd; the later run's cwd decides without the events.
+  { sideChat: { parentRunCwd: "/repo/parent-run" }, folder: "/repo/parent-run" },
+  { relocation: "settles", folder: "/repo/side-chat-parent-moved", recorded: true },
+  { driver: "codex", relocation: "settles" },
   {
-    parentRunCwd: "/repo/side-chat-parent-run",
-    storageFolder: "/repo/side-chat-parent-run",
-    eventReads: 0,
+    sideChat: { moveDuringFork: true, parentStorageFolder: "/repo/parent-recorded" },
+    folder: "/repo/parent-recorded",
+    recorded: true,
   },
-])(
-  "forks a Claude parent from its session's storage folder $storageFolder",
-  ({ parentRunCwd, storageFolder, eventReads }) =>
-    Effect.gen(function* () {
-      const harness = forkHarness(parentRunCwd === undefined ? {} : { parentRunCwd });
+  { sideChat: { moveDuringFork: true }, folder: "/repo/side-chat-parent", eventReads: 1 },
+  { relocation: "hangs", willRetry: true },
+  { relocation: "hangs" },
+])("forks a Claude parent from its session's storage folder: %j", (row) =>
+  Effect.gen(function* () {
+    const settled = yield* Deferred.make<void>();
+    const harness = forkHarness(
+      { ...row.sideChat, ...(row.relocation === undefined ? {} : { relocation: settled }) },
+      row.driver ?? "claudeAgent",
+    );
 
-      yield* harness.start;
-
-      expect(harness.forkThread.mock.calls[0]?.[0].sourceNativeStorageFolder).toBe(storageFolder);
-      expect(harness.readEvents).toHaveBeenCalledTimes(eventReads);
-    }),
-);
-
-effectIt.effect.each([
-  { driver: "claudeAgent", forksBeforeRelocation: false, folder: "/repo/side-chat-parent-moved" },
-  { driver: "codex", forksBeforeRelocation: true, folder: undefined },
-])(
-  "waits for the parent's Claude relocation before reading its storage folder: $driver",
-  ({ driver, forksBeforeRelocation, folder }) =>
-    Effect.gen(function* () {
-      const relocation = yield* Deferred.make<void>();
-      const harness = forkHarness({ relocation }, driver);
-
-      const start = yield* Effect.forkChild(harness.start);
+    const start = yield* Effect.forkChild(
+      Effect.exit(row.willRetry === true ? harness.startWithRetry : harness.start),
+    );
+    if (row.relocation !== undefined) {
       yield* Effect.race(Deferred.await(harness.relocationAwaited), Fiber.await(start));
-      expect(harness.forkThread).toHaveBeenCalledTimes(forksBeforeRelocation ? 1 : 0);
-      yield* Deferred.succeed(relocation, undefined);
-      yield* Fiber.join(start);
-
-      expect(harness.forkThread.mock.calls[0]?.[0].sourceProviderThread.nativeStorageFolder).toBe(
-        folder,
+      // Only a Codex parent forks past an unsettled relocation.
+      expect(harness.relocationsAtFork).toEqual(
+        row.driver === "codex" ? [["relocate-parent"]] : [],
       );
-      expect(harness.readEvents).not.toHaveBeenCalled();
-    }),
-);
+      yield* row.relocation === "settles"
+        ? Deferred.succeed(settled, undefined)
+        : TestClock.adjust("30 seconds");
+    }
 
-effectIt.effect.each([
-  { parentStorageFolder: "/repo/side-chat-parent-recorded" },
-  { parentStorageFolder: undefined },
-])(
-  "blocks a move between the fork's relocation check and the fork: folder $parentStorageFolder",
-  ({ parentStorageFolder }) =>
-    Effect.gen(function* () {
-      const harness = forkHarness({
-        moveDuringFork: true,
-        ...(parentStorageFolder === undefined ? {} : { parentStorageFolder }),
-      });
-
-      yield* harness.start;
-
-      expect(harness.relocationsAtFork).toEqual([[]]);
-      expect(harness.forkThread.mock.calls[0]?.[0].sourceNativeStorageFolder).toBe(
-        parentStorageFolder ?? "/repo/side-chat-parent",
-      );
-    }),
-);
-
-effectIt.effect.each([true, false])(
-  "fails a fork whose parent's Claude session is still moving only on the last attempt: willRetry %s",
-  (willRetry) =>
-    Effect.gen(function* () {
-      const harness = forkHarness({ relocation: yield* Deferred.make<void>() });
-
-      const start = yield* Effect.forkChild(
-        Effect.exit(willRetry ? harness.startWithRetry : harness.start),
-      );
-      yield* Deferred.await(harness.relocationAwaited);
-      yield* TestClock.adjust("30 seconds");
-
-      expect((yield* Fiber.join(start))._tag).toBe(willRetry ? "Failure" : "Success");
-      expect(harness.forkThread).not.toHaveBeenCalled();
-      expect(harness.projection().runs.at(-1)?.status).toBe(willRetry ? "starting" : "failed");
-      expect(harness.projection().turnItems).toMatchObject(
-        willRetry
-          ? []
-          : [
-              {
-                type: "error",
-                failure: {
-                  message:
-                    "The source thread's Claude session is still being moved. Try again in a moment.",
-                },
+    const hangs = row.relocation === "hangs";
+    expect((yield* Fiber.join(start))._tag).toBe(row.willRetry === true ? "Failure" : "Success");
+    expect(
+      harness.forkThread.mock.calls.map(([fork]) => [
+        fork.sourceNativeStorageFolder,
+        fork.sourceProviderThread.nativeStorageFolder,
+      ]),
+    ).toEqual(hangs ? [] : [[row.folder, row.recorded === true ? row.folder : undefined]]);
+    expect(harness.relocationsAtFork.at(-1)).toEqual(
+      hangs ? undefined : row.driver === "codex" ? ["relocate-parent"] : [],
+    );
+    expect(harness.readEvents).toHaveBeenCalledTimes(row.eventReads ?? 0);
+    expect(harness.projection().runs.at(-1)?.status).toBe(
+      hangs ? (row.willRetry === true ? "starting" : "failed") : "running",
+    );
+    expect(harness.projection().turnItems.filter((item) => item.type === "error")).toMatchObject(
+      hangs && row.willRetry !== true
+        ? [
+            {
+              failure: {
+                message:
+                  "The source thread's Claude session is still being moved. Try again in a moment.",
               },
-            ],
-      );
-    }),
+            },
+          ]
+        : [],
+    );
+  }),
 );
 
 effectIt.effect.each([

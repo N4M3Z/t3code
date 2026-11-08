@@ -12,7 +12,7 @@ import * as Stream from "effect/Stream";
 import type * as EventStore from "./EventStore.ts";
 
 // Scopes in commit order; a run's latest scope wins.
-export function nativeStorageFolder(input: {
+function nativeStorageFolder(input: {
   readonly providerThread: Pick<
     OrchestrationV2ProviderThread,
     "id" | "nativeThreadRef" | "nativeStorageFolder"
@@ -29,32 +29,29 @@ export function nativeStorageFolder(input: {
   if (providerThread.nativeStorageFolder !== undefined) return providerThread.nativeStorageFolder;
   const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
   const sessionRunIds = new Set(
-    input.attempts
-      .filter(
-        (attempt) =>
-          attempt.nativeThreadId !== undefined && attempt.nativeThreadId === nativeThreadId,
-      )
-      .map((attempt) => attempt.runId),
+    input.attempts.flatMap((attempt) =>
+      attempt.nativeThreadId !== undefined && attempt.nativeThreadId === nativeThreadId
+        ? [attempt.runId]
+        : [],
+    ),
   );
-  const runs = [...input.runs].sort((left, right) => left.ordinal - right.ordinal);
-  const sessionRunCwd = runs.find((run) => sessionRunIds.has(run.id) && run.cwd !== undefined)?.cwd;
-  if (sessionRunCwd !== undefined) return sessionRunCwd;
   const rootScopes = new Map(
     input.checkpointScopes.flatMap((scope) =>
       scope.kind === "root_run" && scope.runId !== null ? [[scope.runId, scope] as const] : [],
     ),
   );
+  const runs = [...input.runs].sort((left, right) => left.ordinal - right.ordinal);
   const scopes = runs.flatMap((run) => rootScopes.get(run.id) ?? []);
-  const sessionScope = scopes.find(
-    (scope) => scope.runId !== null && sessionRunIds.has(scope.runId),
+  return (
+    runs.find((run) => sessionRunIds.has(run.id) && run.cwd !== undefined)?.cwd ??
+    scopes.find((scope) => scope.runId !== null && sessionRunIds.has(scope.runId))?.cwd ??
+    (input.attempts.some(
+      (attempt) =>
+        attempt.providerThreadId === providerThread.id && attempt.nativeThreadId !== undefined,
+    )
+      ? undefined
+      : scopes.find((scope) => scope.providerThreadId === providerThread.id)?.cwd)
   );
-  if (sessionScope !== undefined) return sessionScope.cwd;
-  return input.attempts.some(
-    (attempt) =>
-      attempt.providerThreadId === providerThread.id && attempt.nativeThreadId !== undefined,
-  )
-    ? undefined
-    : scopes.find((scope) => scope.providerThreadId === providerThread.id)?.cwd;
 }
 
 export const nativeStorageFolders = Effect.fn("NativeStorageFolder.nativeStorageFolders")(
@@ -70,7 +67,7 @@ export const nativeStorageFolders = Effect.fn("NativeStorageFolder.nativeStorage
         eventStore.read({ threadId, eventType: "checkpoint-scope.created" }).pipe(
           Stream.runCollect,
           Effect.map((events) =>
-            Array.from(events).flatMap(({ event }) =>
+            events.flatMap(({ event }) =>
               event.type === "checkpoint-scope.created" ? [event.payload] : [],
             ),
           ),

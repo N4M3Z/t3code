@@ -68,6 +68,13 @@ it.effect.each([
     reads: 1,
   },
   {
+    name: "keeps the earliest session run's scope event when only a later run recorded a cwd",
+    providerThreads: [providerThread("a")],
+    attempts: [attempt(1, "a"), attempt(3, "a")],
+    folders: [[row, "/repo/other"]],
+    reads: 1,
+  },
+  {
     name: "uses the row's earliest surviving scope event when its attempts predate nativeThreadId",
     providerThreads: [providerThread("a")],
     attempts: [attempt(1, undefined, otherRow), attempt(2), attempt(3), attempt(4)],

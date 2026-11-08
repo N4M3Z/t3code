@@ -556,6 +556,7 @@ function makeLocalCommandHarness(input: {
         activeAttemptId: parentTurns[0]!.attempt.id,
         status: "completed" as const,
         completedAt: now,
+        ...(input.sideChat?.parentRunCwd === undefined ? {} : { cwd: input.sideChat.parentRunCwd }),
       },
       {
         ...run,
@@ -566,7 +567,6 @@ function makeLocalCommandHarness(input: {
         activeAttemptId: parentTurns[1]!.attempt.id,
         status: "rolled_back" as const,
         completedAt: now,
-        ...(input.sideChat?.parentRunCwd === undefined ? {} : { cwd: input.sideChat.parentRunCwd }),
       },
       ...(input.sideChat?.nativeForkFrom === "busy"
         ? [

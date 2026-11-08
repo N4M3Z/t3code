@@ -71,6 +71,7 @@ export function composerCommandKeyHandler(input: {
   readonly toggleInteractionMode: () => void;
   readonly nudgeComposerMenuHighlight: (key: "ArrowDown" | "ArrowUp") => void;
   readonly onSelectComposerItem: (item: ComposerCommandItem) => void;
+  readonly completeFolderMovePath: () => void;
   readonly resolveActiveComposerTrigger: () => { trigger: ComposerTrigger | null };
   readonly readComposerSnapshot: () => { value: string };
   readonly applyPromptReplacement: (
@@ -117,6 +118,7 @@ export function composerCommandKeyHandler(input: {
     toggleInteractionMode,
     nudgeComposerMenuHighlight,
     onSelectComposerItem,
+    completeFolderMovePath,
     resolveActiveComposerTrigger,
     readComposerSnapshot,
     applyPromptReplacement,
@@ -225,7 +227,14 @@ export function composerCommandKeyHandler(input: {
     }
     if (menuIsActive && (submissionIntent === null || submissionIntent === "foreground")) {
       const currentItems = composerMenuItemsRef.current;
-      const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
+      // In the `/cd` pane Enter runs the typed destination unless the user picked a row.
+      const isFolderPane = trigger?.kind === "folder";
+      const selectedItem =
+        activeComposerMenuItemRef.current ?? (isFolderPane ? undefined : currentItems[0]);
+      if (isFolderPane && key === "Tab") {
+        completeFolderMovePath();
+        return true;
+      }
       if (key === "ArrowDown" && currentItems.length > 0) {
         nudgeComposerMenuHighlight("ArrowDown");
         return true;

@@ -75,6 +75,7 @@ import {
   composerSubmissionIntentForKey,
   composerStateAtPromptEnd,
   detectComposerTrigger,
+  parseFolderMoveCommand,
   expandCollapsedComposerCursor,
   formatAssistantCitationForComposer,
   isPathSuggestionCurrent,
@@ -213,6 +214,7 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { folderMoveMenuBlockReason } from "./composerSend.logic";
+import { folderMoveTabCompletion } from "./folderMoveDestinations";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
 import { getComposerPromptInjectionState, getComposerReasoningStep } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
@@ -393,6 +395,8 @@ export interface ChatComposerProps {
   folderMoveAvailable?: boolean | undefined;
   /** The server has not seen the thread yet, so `/cd` and `/no` cannot move it. */
   isLocalDraftThread?: boolean | undefined;
+  /** The thread is in No project, so the `/cd` pane does not offer it. */
+  folderMoveInNoProject?: boolean | undefined;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   onFreshSession?: (() => void) | undefined;
   environmentUnavailable: {
@@ -1022,7 +1026,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     return collapseExpandedComposerCursor(value, value.length, isLiteralPendingAnswer);
   });
   const {
-    trigger: composerTrigger,
+    trigger: detectedComposerTrigger,
     setTrigger: setComposerTrigger,
     resolveTrigger: resolveComposerTrigger,
     dismissTrigger: dismissComposerTrigger,
@@ -1030,6 +1034,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = useComposerTriggerState(() =>
     isLiteralPendingAnswer ? null : detectComposerTrigger(prompt, prompt.length),
   );
+  // `/cd ` opens the destination pane only where the server can move threads.
+  const offeredComposerTrigger = (trigger: ComposerTrigger | null) =>
+    trigger?.kind === "folder" && props.folderMoveAvailable !== true ? null : trigger;
+  const composerTrigger = offeredComposerTrigger(detectedComposerTrigger);
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
   const composerSuggestionId = useId();
   const composerSuggestionListId = `${composerSuggestionId}-${encodeURIComponent(draftId ?? activeThreadId ?? "new")}-suggestions`;
@@ -1150,10 +1158,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerPreviewAnnotations.length === 0 &&
     composerReviewComments.length === 0;
   const linkedEnvironments = useLinkedEnvironments(environmentId);
+  const folderMoveDisabledReason = folderMoveMenuBlockReason({
+    isLocalDraftThread: props.isLocalDraftThread === true,
+    editingQueuedMessage: isEditingQueuedMessage,
+    requestPending: activePendingProgress !== null || pendingApprovals.length > 0,
+    running: phase === "running",
+  });
   const {
     items: composerMenuItems,
     isLoading: isComposerMenuLoading,
     emptyState: composerMenuEmptyState,
+    folderBrowse,
   } = useComposerMenuItems({
     composerTrigger,
     environmentId,
@@ -1167,12 +1182,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     sideChatAvailable: props.sideChatAvailable === true,
     sideChatDisabledReason: props.sideChatDisabledReason ?? null,
     folderMoveAvailable: props.folderMoveAvailable === true,
-    folderMoveDisabledReason: folderMoveMenuBlockReason({
-      isLocalDraftThread: props.isLocalDraftThread === true,
-      editingQueuedMessage: isEditingQueuedMessage,
-      requestPending: activePendingProgress !== null || pendingApprovals.length > 0,
-      running: phase === "running",
-    }),
+    folderMoveDisabledReason,
+    folderMoveCurrentFolder: gitCwd,
+    folderMoveInNoProject: props.folderMoveInNoProject === true,
     freshSessionAvailable: props.onFreshSession !== undefined,
     compactSlashCommandAvailable,
     selectedProvider,
@@ -1192,6 +1204,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     highlightedItemId: composerHighlightedItemId,
     currentSearchKey: composerMenuSearchKey,
     highlightedSearchKey: composerHighlightedSearchKey,
+    // Enter on a typed destination moves there, so no row is chosen until the user picks one.
+    highlightFirst: composerTrigger?.kind !== "folder",
   });
   const activeComposerMenuItem =
     composerMenuItems.find((item) => item.id === activeComposerMenuItemId) ?? null;
@@ -1910,7 +1924,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       snapshot,
       trigger: isLiteralPendingAnswer
         ? null
-        : resolveComposerTrigger(detectComposerTrigger(snapshot.value, snapshot.expandedCursor)),
+        : offeredComposerTrigger(
+            resolveComposerTrigger(detectComposerTrigger(snapshot.value, snapshot.expandedCursor)),
+          ),
     };
   };
 
@@ -1984,6 +2000,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (applied) {
         setComposerHighlightedItemId(null);
       }
+      return;
+    }
+    if (item.type === "folder-destination") {
+      if (trigger.kind !== "folder") return;
+      if (item.action.kind === "open") {
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          trigger.rangeEnd,
+          item.action.query,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd) },
+        );
+        if (applied) setComposerHighlightedItemId(null);
+        return;
+      }
+      // The row stands for a command: write it, close the pane, and run it.
+      const command = item.action.kind === "no-project" ? "/no" : `/cd ${item.action.path}`;
+      const applied = applyPromptReplacement(0, snapshot.value.length, command, {
+        expectedText: snapshot.value,
+      });
+      if (!applied) return;
+      setComposerHighlightedItemId(null);
+      dismissComposerTrigger(detectComposerTrigger(command, command.length));
+      composerFormRef.current?.requestSubmit();
       return;
     }
     if (item.type === "provider-slash-command") {
@@ -2105,6 +2144,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const onComposerMenuItemHighlightedStable = useStableCallback(onComposerMenuItemHighlighted);
 
+  /** Tab in the `/cd` pane: enter the highlighted folder, or extend the typed name. */
+  const completeFolderMovePath = () => {
+    const { snapshot, trigger } = resolveActiveComposerTrigger();
+    if (trigger?.kind !== "folder") return;
+    const completion = folderMoveTabCompletion({
+      query: trigger.query,
+      platform: folderBrowse.platform,
+      highlighted:
+        activeComposerMenuItem?.type === "folder-destination" ? activeComposerMenuItem : null,
+      entries: folderBrowse.entries,
+    });
+    if (completion === null) return;
+    const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, completion, {
+      expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+    });
+    if (applied) setComposerHighlightedItemId(null);
+  };
+
   const nudgeComposerMenuHighlight = (key: "ArrowDown" | "ArrowUp") => {
     if (composerMenuItems.length === 0) return;
     const highlightedIndex = composerMenuItems.findIndex(
@@ -2167,6 +2224,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
     ) {
       event?.preventDefault();
+      return;
+    }
+    // `/cd` with no destination opens the pane to choose one, also after Escape closed it.
+    // While a move is blocked, the pane gives the reason.
+    const folderMove =
+      props.folderMoveAvailable === true && !activePendingProgress
+        ? parseFolderMoveCommand(promptRef.current)
+        : null;
+    if (folderMove?.command === "cd" && folderMove.path === null) {
+      event?.preventDefault();
+      const command = "/cd ";
+      if (applyPromptReplacement(0, promptRef.current.length, command)) {
+        resetComposerTrigger(detectComposerTrigger(command, command.length));
+      }
       return;
     }
     // A send while a pasted image is still compressing would strand that image:
@@ -2356,6 +2427,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       toggleInteractionMode,
       nudgeComposerMenuHighlight,
       onSelectComposerItem,
+      completeFolderMovePath,
       resolveActiveComposerTrigger,
       readComposerSnapshot,
       applyPromptReplacement,
@@ -3461,7 +3533,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       ? "Finding pull request..."
                       : composerTriggerKind === "skill" || composerTriggerKind === "slash-command"
                         ? "Searching workspace skills..."
-                        : "Searching workspace files..."
+                        : composerTriggerKind === "folder"
+                          ? "Loading folders..."
+                          : "Searching workspace files..."
                     : composerMenuEmptyState
                   : ""}
               </div>
@@ -3474,6 +3548,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isLoading={isComposerMenuLoading}
                     triggerKind={composerTriggerKind}
                     emptyStateText={composerMenuEmptyState}
+                    header={
+                      composerTriggerKind === "folder" && gitCwd
+                        ? `Working in ${gitCwd}`
+                        : undefined
+                    }
                     activeItemId={activeComposerMenuItem?.id ?? null}
                     onHighlightedItemChange={onComposerMenuItemHighlightedStable}
                     onSelect={onSelectComposerItemStable}

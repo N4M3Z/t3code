@@ -17,7 +17,7 @@ import {
 
 import { resolveShortcutCommand, type ShortcutEventLike } from "./keybindings";
 
-export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
+export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill" | "folder";
 export type ComposerSlashCommand =
   | "model"
   | "plan"
@@ -258,6 +258,16 @@ export function collapseExpandedComposerCursor(
 
 export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
+  // `/cd <destination>`: the whole rest of the line is the query, so a path keeps its spaces.
+  const folderCommand = /^\/cd[ \t]/i.exec(text);
+  if (folderCommand && cursor >= folderCommand[0].length && !/[\r\n]/.test(text)) {
+    return {
+      kind: "folder",
+      query: text.slice(folderCommand[0].length),
+      rangeStart: folderCommand[0].length,
+      rangeEnd: text.length,
+    };
+  }
   const tokenStart = tokenStartForCursor(text, cursor);
   const token = text.slice(tokenStart, cursor);
   if (token.startsWith("/")) {

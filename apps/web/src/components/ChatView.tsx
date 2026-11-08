@@ -3685,6 +3685,7 @@ export default function ChatView(props: ChatViewProps) {
                                   serverConfig?.environment.capabilities.threadWorkingFolderMove
                                 }
                                 isLocalDraftThread={isLocalDraftThread}
+                                folderMoveInNoProject={activeProjectIsScratch}
                                 onFreshSession={
                                   freshSessionCommandAvailable ? armFreshSessionStable : undefined
                                 }

@@ -244,6 +244,22 @@ describe("detectComposerTrigger", () => {
     expect(detectComposerTrigger(text, cursor)).toBeNull();
   });
 
+  it("gives /cd its destination query, spaces and slashes included", () => {
+    const text = "/cd ~/My Projects/app";
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "folder",
+      query: "~/My Projects/app",
+      rangeStart: 4,
+      rangeEnd: text.length,
+    });
+    expect(detectComposerTrigger("/cd ", 4)).toMatchObject({ kind: "folder", query: "" });
+    // Before the space it is still the slash command; other text is not a destination.
+    expect(detectComposerTrigger("/cd", 3)).toMatchObject({ kind: "slash-command", query: "cd" });
+    expect(detectComposerTrigger("/cd /a", 2)).toMatchObject({ kind: "slash-command" });
+    expect(detectComposerTrigger("go /cd /tmp", 11)?.kind).not.toBe("folder");
+    expect(detectComposerTrigger("/cd /tmp\nmore", 8)?.kind).not.toBe("folder");
+  });
+
   it.each(["Use ", "Use\t", "Use\n  "])("detects inline slash skills after %j", (prefix) => {
     const text = `${prefix}/skill:review later`;
     const cursor = `${prefix}/skill:review`.length;

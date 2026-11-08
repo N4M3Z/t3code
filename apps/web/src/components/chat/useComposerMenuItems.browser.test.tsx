@@ -11,9 +11,14 @@ function SlashMenu(props: {
   folderMoveAvailable: boolean;
   folderMoveDisabledReason?: string;
   items: RefObject<ComposerCommandItem[] | null>;
+  folderQuery?: string;
+  emptyState?: RefObject<string | null>;
 }) {
-  const { items } = useComposerMenuItems({
-    composerTrigger: { kind: "slash-command", query: "", rangeStart: 0, rangeEnd: 1 },
+  const { items, emptyState } = useComposerMenuItems({
+    composerTrigger:
+      props.folderQuery === undefined
+        ? { kind: "slash-command", query: "", rangeStart: 0, rangeEnd: 1 }
+        : { kind: "folder", query: props.folderQuery, rangeStart: 4, rangeEnd: 4 },
     environmentId: EnvironmentId.make("env-1"),
     linkedEnvironments: new Map(),
     gitCwd: null,
@@ -26,6 +31,8 @@ function SlashMenu(props: {
     sideChatDisabledReason: null,
     folderMoveAvailable: props.folderMoveAvailable,
     folderMoveDisabledReason: props.folderMoveDisabledReason ?? null,
+    folderMoveCurrentFolder: null,
+    folderMoveInNoProject: false,
     freshSessionAvailable: false,
     compactSlashCommandAvailable: false,
     selectedProvider: ProviderDriverKind.make("claudeAgent"),
@@ -36,8 +43,33 @@ function SlashMenu(props: {
     questionAttachmentTarget: null,
   });
   useImperativeHandle(props.items, () => items);
+  useImperativeHandle(props.emptyState, () => emptyState);
   return null;
 }
+
+it.each([
+  [undefined, "No other project. Type a path to move to a folder."],
+  ["This thread is still working. Try again when the turn ends.", undefined],
+])("the /cd pane with no project says what to do, or why it is blocked", async (reason, text) => {
+  const shown: RefObject<ComposerCommandItem[] | null> = { current: null };
+  const emptyState: RefObject<string | null> = { current: null };
+  await using _screen = await render(
+    <AppAtomRegistryProvider>
+      <SlashMenu
+        folderMoveAvailable
+        folderQuery=""
+        {...(reason === undefined ? {} : { folderMoveDisabledReason: reason })}
+        items={shown}
+        emptyState={emptyState}
+      />
+    </AppAtomRegistryProvider>,
+  );
+  // No project is offered while nothing blocks the move, and nothing is offered while it is blocked.
+  expect(shown.current?.map((item) => item.label)).toEqual(
+    reason === undefined ? ["No project"] : [],
+  );
+  expect(emptyState.current).toBe(text ?? reason);
+});
 
 it.each([
   [false, ["/model", "/review"]],

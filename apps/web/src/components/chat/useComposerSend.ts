@@ -582,10 +582,14 @@ export function useComposerSend(input: ComposerSendInput) {
         });
       closeMoveToast();
       if (blockReason !== null) return refuse(blockReason);
+      // The composer opens the destination pane for a bare `/cd`; this is what is left when it
+      // cannot, such as during a running turn.
       if (folderMove.command === "cd" && folderMove.path === null) {
-        const folder =
-          activeThread.worktreePath ?? activeProject?.workspaceRoot ?? "an unknown folder";
-        notify({ type: "info", title: `Working in ${folder}`, description: "Usage: /cd <path>" });
+        notify({
+          type: "info",
+          title: "Choose a destination",
+          description: "Type a project name or a folder path after /cd.",
+        });
         return;
       }
       if (folderMove.command === "no" && folderMove.path !== null) {

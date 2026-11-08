@@ -338,15 +338,13 @@ export function parseStandaloneComposerSlashCommand(
   return "default";
 }
 
-type FolderMoveCommand =
-  | { readonly command: "cd"; readonly path: string | null }
-  | { readonly command: "no"; readonly argument: string };
+type FolderMoveCommand = { readonly command: "cd" | "no"; readonly path: string | null };
 
 export function parseFolderMoveCommand(text: string): FolderMoveCommand | null {
   const match = /^\/(cd|no)(?:\s+([\s\S]*))?$/i.exec(text.trim());
   if (!match) return null;
   const argument = match[2]?.trim() ?? "";
-  if (match[1]?.toLowerCase() === "no") return { command: "no", argument };
+  if (match[1]?.toLowerCase() === "no") return { command: "no", path: argument || null };
   return { command: "cd", path: (/^(["'])([\s\S]*)\1$/.exec(argument)?.[2] ?? argument) || null };
 }
 

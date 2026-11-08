@@ -24,11 +24,7 @@ export function slashCommandItemsForPromptPosition(
     (item) =>
       item.type === "skill" ||
       (item.type === "slash-command" &&
-        item.command !== "side" &&
-        item.command !== "btw" &&
-        item.command !== "clear" &&
-        item.command !== "cd" &&
-        item.command !== "no"),
+        !["side", "btw", "clear", "cd", "no"].includes(item.command)),
   );
 }
 

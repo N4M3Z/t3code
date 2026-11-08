@@ -1,5 +1,4 @@
 import { EnvironmentId, ProjectReadFileError, ThreadId } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -392,16 +391,14 @@ describe("ChatMarkdown workspace file opens", () => {
     using _read = vi.spyOn(projectEnvironment, "readFile").mockImplementation(
       ({ input }) =>
         Atom.make(
-          AsyncResult.failure(
-            Cause.fail(
-              new ProjectReadFileError({
-                ...input,
-                failure: "operation_failed",
-                operation: "realpath-target",
-                resolvedPath: input.relativePath,
-                cause: { code: "ENOENT" },
-              }),
-            ),
+          AsyncResult.fail(
+            new ProjectReadFileError({
+              ...input,
+              failure: "operation_failed",
+              operation: "realpath-target",
+              resolvedPath: input.relativePath,
+              cause: { code: "ENOENT" },
+            }),
           ),
         ) as never,
     );

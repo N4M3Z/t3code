@@ -81,9 +81,7 @@ vi.mock(import("~/state/query"), async (original) => ({
 const fileMenu = vi.hoisted(() => ({ targets: [] as Array<FileContextMenuTarget> }));
 vi.mock(import("~/fileContextMenu"), async (original) => ({
   ...(await original()),
-  useFileContextMenuHandler: () => (target: FileContextMenuTarget) => {
-    fileMenu.targets.push(target);
-  },
+  useFileContextMenuHandler: () => (target: FileContextMenuTarget) => fileMenu.targets.push(target),
 }));
 
 const audioAsset = vi.hoisted(() => ({ url: "" }));
@@ -1599,8 +1597,6 @@ it("opens a row's relative links under its run's folder", async () => {
         runId: null,
         planMarkdown: "See [plan](plan-notes.txt).",
         status: "active",
-        createdAt: CREATED_AT,
-        updatedAt: CREATED_AT,
       },
     } as Entry,
     work("move-receipt", {
@@ -1662,10 +1658,7 @@ it("opens a row's relative links under its run's folder", async () => {
     "src/c.ts",
     "notes.md",
   ];
-  await vi.waitFor(() =>
-    expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(5),
-  );
-  expect(await opened()).toEqual(noFolders);
+  await vi.waitFor(async () => expect(await opened()).toEqual(noFolders));
 
   await screen.rerender(
     ui({

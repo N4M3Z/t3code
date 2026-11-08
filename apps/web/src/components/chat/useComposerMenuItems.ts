@@ -265,22 +265,16 @@ export function useComposerMenuItems({
             ] as const)
           : []),
         ...(folderMoveAvailable
-          ? ([
-              {
-                id: "slash:cd",
-                type: "slash-command",
-                command: "cd",
-                label: "/cd",
-                description: "Move this thread to another folder",
-              },
-              {
-                id: "slash:no",
-                type: "slash-command",
-                command: "no",
-                label: "/no",
-                description: "Move this thread out of its project",
-              },
-            ] as const)
+          ? (["cd", "no"] as const).map((command) => ({
+              id: `slash:${command}`,
+              type: "slash-command" as const,
+              command,
+              label: `/${command}`,
+              description:
+                command === "cd"
+                  ? "Move this thread to another folder"
+                  : "Move this thread out of its project",
+            }))
           : []),
         ...(freshSessionAvailable
           ? ([

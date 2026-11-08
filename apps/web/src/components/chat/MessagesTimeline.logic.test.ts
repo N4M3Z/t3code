@@ -4577,12 +4577,7 @@ it("timelineRowFolder takes the run's folder, then the first move receipt after 
   const items = [
     user("imported"),
     user("legacy", legacy),
-    item("plan", legacy, {
-      type: "proposed_plan",
-      planId: "plan",
-      markdown: "plan",
-      streaming: false,
-    }),
+    item("plan", legacy, { type: "proposed_plan", planId: "p", markdown: "p", streaming: false }),
     user("in-c", RunId.make("run-c")),
     user("inherited", RunId.make("run-inherited")),
     user("live-wins", RunId.make("run-b")),
@@ -4593,12 +4588,7 @@ it("timelineRowFolder takes the run's folder, then the first move receipt after 
     user("after-b", legacy),
   ];
   const entries = deriveTimelineEntriesFromVisibleTurnItems({
-    visibleTurnItems: items.map((item, position) => ({
-      ...base,
-      item,
-      position,
-      sourceItemId: item.id,
-    })),
+    visibleTurnItems: items.map((item, position) => ({ ...base, item, position })),
     optimisticMessages: [],
   });
   const folders = timelineRowFolders(
@@ -4616,13 +4606,12 @@ it("timelineRowFolder takes the run's folder, then the first move receipt after 
     receiptFoldersSignature(entries),
   );
   const folder = (row: object) => timelineRowFolder(row as MessagesTimelineRow, folders);
-  expect(folder({ kind: "work", groupedEntries: [{ runId: RunId.make("run-c") }] })).toEqual({
-    cwd: "/c",
-    repositoryRoot: "/repo-c",
-  });
-  expect(folder({ kind: "work-live", entry: { runId: RunId.make("run-b") } })).toEqual({
-    cwd: "/worktree",
-  });
+  expect(
+    [
+      { kind: "work", groupedEntries: [{ runId: RunId.make("run-c") }] },
+      { kind: "work-live", entry: { runId: RunId.make("run-b") } },
+    ].map(folder),
+  ).toEqual([{ cwd: "/c", repositoryRoot: "/repo-c" }, { cwd: "/worktree" }]);
 
   for (const toolCallVisibility of ["showAll", "zen"] as const) {
     const rows = deriveMessagesTimelineRows({
@@ -4635,11 +4624,7 @@ it("timelineRowFolder takes the run's folder, then the first move receipt after 
     expect(rows.filter((row) => row.kind === "work").map(folder)).toEqual(
       toolCallVisibility === "showAll" ? [{ cwd: "/b" }, { cwd: "/b" }, undefined] : [],
     );
-    expect(
-      rows.flatMap((row) =>
-        row.kind === "message" || row.kind === "proposed-plan" ? [folder(row)] : [],
-      ),
-    ).toEqual([
+    expect(rows.filter((row) => row.kind !== "work").map(folder)).toEqual([
       { cwd: "/a" },
       { cwd: "/a" },
       { cwd: "/a" },

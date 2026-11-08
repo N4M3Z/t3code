@@ -56,24 +56,22 @@ describe("relative links inside a rendered host file", () => {
   });
 });
 
-describe("relative links with a recorded run folder", () => {
-  it("resolve exactly under that folder, with no workspace lookup", () => {
-    const worktree = "/repo/.worktrees/w";
-    expect(resolveInlineCodeFileLinkMeta("src/a.ts:12", "/repo", worktree)).toMatchObject({
-      filePath: "/repo/src/a.ts",
-    });
-    expect(resolveInlineCodeFileLinkMeta("src/a.ts:12", "/repo", worktree, true)).toMatchObject({
-      filePath: "/repo/.worktrees/w/src/a.ts",
-      line: 12,
-      workspaceLookupPath: null,
-    });
-    expect(resolveMarkdownFileLinkMeta("missing.ts", "/repo", "/repo")).toMatchObject({
-      workspaceLookupPath: "missing.ts",
-    });
-    expect(resolveMarkdownFileLinkMeta("missing.ts", "/repo", "/repo", true)).toMatchObject({
-      filePath: "/repo/missing.ts",
-      workspaceLookupPath: null,
-    });
+it("relative links with a recorded run folder resolve exactly there, with no workspace lookup", () => {
+  const worktree = "/repo/.worktrees/w";
+  expect(resolveInlineCodeFileLinkMeta("src/a.ts:12", "/repo", worktree)).toMatchObject({
+    filePath: "/repo/src/a.ts",
+  });
+  expect(resolveInlineCodeFileLinkMeta("src/a.ts:12", "/repo", worktree, true)).toMatchObject({
+    filePath: "/repo/.worktrees/w/src/a.ts",
+    line: 12,
+    workspaceLookupPath: null,
+  });
+  expect(resolveMarkdownFileLinkMeta("missing.ts", "/repo", "/repo")).toMatchObject({
+    workspaceLookupPath: "missing.ts",
+  });
+  expect(resolveMarkdownFileLinkMeta("missing.ts", "/repo", "/repo", true)).toMatchObject({
+    filePath: "/repo/missing.ts",
+    workspaceLookupPath: null,
   });
 });
 

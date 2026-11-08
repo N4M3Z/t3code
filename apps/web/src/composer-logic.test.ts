@@ -566,20 +566,18 @@ describe("side chat slash commands", () => {
   });
 });
 
-describe("parseFolderMoveCommand", () => {
-  it.each([
-    ["/cd", { command: "cd", path: null }],
-    ['/cd ""', { command: "cd", path: null }],
-    ["/CD ~/src/app ", { command: "cd", path: "~/src/app" }],
-    ["/cd My Projects/app", { command: "cd", path: "My Projects/app" }],
-    ['/cd "My Projects/app"', { command: "cd", path: "My Projects/app" }],
-    ["/cd ' a b '", { command: "cd", path: " a b " }],
-    ['/cd "a', { command: "cd", path: '"a' }],
-    ["/no", { command: "no", argument: "" }],
-    ["/no project", { command: "no", argument: "project" }],
-    ["/node", null],
-    ["run /cd later", null],
-  ])("parses %j", (text, expected) => {
-    expect(parseFolderMoveCommand(text)).toEqual(expected);
-  });
+it.each([
+  ["/cd", { command: "cd", path: null }],
+  ['/cd ""', { command: "cd", path: null }],
+  ["/CD ~/src/app ", { command: "cd", path: "~/src/app" }],
+  ["/cd My Projects/app", { command: "cd", path: "My Projects/app" }],
+  ['/cd "My Projects/app"', { command: "cd", path: "My Projects/app" }],
+  ["/cd ' a b '", { command: "cd", path: " a b " }],
+  ['/cd "a', { command: "cd", path: '"a' }],
+  ["/no", { command: "no", path: null }],
+  ["/no project", { command: "no", path: "project" }],
+  ["/node", null],
+  ["run /cd later", null],
+])("parseFolderMoveCommand parses %j", (text, expected) => {
+  expect(parseFolderMoveCommand(text)).toEqual(expected);
 });

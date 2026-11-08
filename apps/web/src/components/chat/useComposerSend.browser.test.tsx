@@ -51,14 +51,14 @@ function Harness(props: { readonly input: Input; readonly send: RefObject<Send |
 }
 
 async function setup(options: {
-  readonly folderMove: boolean;
+  readonly folderMove?: boolean;
   readonly editingQueuedMessage?: boolean;
   readonly pendingQuestion?: boolean;
 }) {
   mocks.move.mockReset();
   mocks.startTurn.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
-  const capabilities = { threadWorkingFolderMove: options.folderMove };
+  const capabilities = { threadWorkingFolderMove: options.folderMove !== false };
   appAtomRegistry.set(mocks.serverConfigs, new Map([[ENV, { environment: { capabilities } }]]));
   const saveEdit = vi.fn();
   const answer = vi.fn();
@@ -133,10 +133,7 @@ it.each([
   { reason: "Answer the pending question or approval first.", pendingQuestion: true },
   { reason: "Update this environment's T3 Code server to move threads.", folderMove: false },
 ])("a typed /cd refused with $reason reaches no other send path", async (scenario) => {
-  const { screen, send, saveEdit, answer, promptRef, draftPrompt } = await setup({
-    folderMove: true,
-    ...scenario,
-  });
+  const { screen, send, saveEdit, answer, promptRef, draftPrompt } = await setup(scenario);
   await using _screen = screen;
   using toast = vi.spyOn(toastManager, "add");
 
@@ -158,7 +155,7 @@ it.each([
 });
 
 it("ignores a second /cd until the first move has reported and cleared the draft", async () => {
-  const { screen, send, promptRef } = await setup({ folderMove: true });
+  const { screen, send, promptRef } = await setup({});
   await using _screen = screen;
   let finish!: (result: unknown) => void;
   mocks.move.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));

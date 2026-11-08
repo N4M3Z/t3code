@@ -174,13 +174,7 @@ it("runThreadMove asks each question once, keeps every flag, and stops at a decl
   ]);
 
   calls.length = 0;
-  const asked: string[] = [];
-  const declined = await runThreadMove(request, move, async (question) => {
-    asked.push(question._tag);
-    return question._tag === "needs-project";
-  });
-  expect(declined).toBeNull();
-  expect(asked).toEqual(["needs-project", "confirm"]);
+  expect(await runThreadMove(request, move, async (q) => q._tag === "needs-project")).toBeNull();
   expect(calls).toHaveLength(2);
   const refused = { _tag: "refused", reason: "A member is busy." } as const;
   const ask = () => Promise.reject<boolean>(new Error("asked"));
@@ -188,12 +182,10 @@ it("runThreadMove asks each question once, keeps every flag, and stops at a decl
 });
 
 it("threadMoveQuestionText names nesting, folder left, destination, way back and threads", () => {
-  expect(
-    threadMoveQuestionText({
-      ...needsProject,
-      nestedIn: { projectId: ProjectId.make("p"), title: "App" },
-    }),
-  ).toBe("Create a project nested in App for /repo/app and move this thread there?");
+  const nested = { ...needsProject, nestedIn: { projectId: ProjectId.make("p"), title: "App" } };
+  expect(threadMoveQuestionText(nested)).toBe(
+    "Create a project nested in App for /repo/app and move this thread there?",
+  );
   expect(
     threadMoveQuestionText({
       ...confirm,

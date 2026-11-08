@@ -223,7 +223,7 @@ export const make = Effect.gen(function* () {
     if (
       target._tag === "new-project" ||
       target.project?.id !== projectId ||
-      decision.members.some((member) => !lockedIds.includes(member.id))
+      collectMoveSet(input.threadId, yield* readShells).some(({ id }) => !lockedIds.includes(id))
     ) {
       return refused("The thread or its destination changed. Try again.");
     }

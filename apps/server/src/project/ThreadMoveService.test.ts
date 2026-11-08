@@ -342,6 +342,21 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
       () => refusal(`The thread changed. Try again. The project "plain" was added and stays.`),
     ],
     [
+      "a subagent child is created during the probes",
+      ({ probe, thread, threadId, a }) =>
+        Ref.set(probe, () =>
+          Ref.set(probe, () => Effect.succeed(false)).pipe(
+            Effect.andThen(thread("sub", a.id, null, { parent: threadId, kind: "subagent" })),
+            Effect.orDie,
+            Effect.as(false),
+          ),
+        ),
+      () =>
+        refusal(
+          `The thread or its destination changed. Try again. The project "plain" was added and stays.`,
+        ),
+    ],
+    [
       "the added project is deleted before the lock",
       ({ remove, key }) => remove(`del:${key}`, key, true),
       () => refusal(`The destination project no longer exists. The project "plain" was added.`),

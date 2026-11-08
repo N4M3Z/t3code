@@ -130,5 +130,9 @@ it.effect(
       assert.strictEqual(yield* folderChangeNote(denied, "/a", "/a"), "");
       const error = yield* Effect.flip(folderChangeNote(denied, "/a", "/w"));
       assert.strictEqual(error.reason._tag, "PermissionDenied");
+      const deniedPrevious = FileSystem.makeNoop({
+        realPath: (target) => (target === "/a" ? denied.realPath(target) : Effect.succeed(target)),
+      });
+      assert.strictEqual(yield* folderChangeNote(deniedPrevious, "/a", "/w"), changed("/a", "/w"));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

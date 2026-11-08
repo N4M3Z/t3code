@@ -70,7 +70,7 @@ export const folderChangeNote = Effect.fn("orchestrationV2.folderChangeNote")(fu
       /[\u0085\u2028\u2029]/gu,
       (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
     );
-  return (yield* resolve(previous)) === (yield* resolve(cwd))
+  return (yield* Effect.orElseSucceed(resolve(previous), () => previous)) === (yield* resolve(cwd))
     ? ""
     : `The working folder changed from ${quote(previous)} to ${quote(cwd)}.`;
 });

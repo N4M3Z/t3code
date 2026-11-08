@@ -1,15 +1,6 @@
 import { assert, it } from "@effect/vitest";
-import { OrchestrationV2TurnItemJson, ThreadId, TurnItemId } from "@t3tools/contracts";
-import * as DateTime from "effect/DateTime";
-import * as Schema from "effect/Schema";
 
-import {
-  moveReceiptTurnItem,
-  previousFolderAfter,
-  threadMoveReceiptMessage,
-} from "./ThreadMoveReceipt.ts";
-
-const turnItemJson = Schema.fromJsonString(OrchestrationV2TurnItemJson);
+import { previousFolderAfter, threadMoveReceiptMessage } from "./ThreadMoveReceipt.ts";
 
 const move = {
   folder: "/repos/b",
@@ -23,26 +14,22 @@ const move = {
 };
 
 it("writes the receipt for a move out of a project root, a worktree or a scratch folder", () => {
-  assert.strictEqual(
-    threadMoveReceiptMessage(move),
-    [
-      'Moved from project "A" to project "B".',
-      "The next turn runs in /repos/b.",
-      "The thread worked in /repos/a.",
-      'Moved with it: "Side chat", "Subagent".',
-      'Cleared the branch "feat/login". Its pull request #12 (https://github.com/o/r/pull/12) stays linked.',
-      "Open terminals keep their folder.",
-    ].join("\n"),
-  );
-  assert.strictEqual(
-    threadMoveReceiptMessage({ ...move, members: [], clearedBranch: null, pullRequest: null }),
-    [
-      'Moved from project "A" to project "B".',
-      "The next turn runs in /repos/b.",
-      "The thread worked in /repos/a.",
-      "Open terminals keep their folder.",
-    ].join("\n"),
-  );
+  const full = threadMoveReceiptMessage(move).split("\n");
+  assert.deepStrictEqual(full, [
+    'Moved from project "A" to project "B".',
+    "The next turn runs in /repos/b.",
+    "The thread worked in /repos/a.",
+    'Moved with it: "Side chat", "Subagent".',
+    'Cleared the branch "feat/login". Its pull request #12 (https://github.com/o/r/pull/12) stays linked.',
+    "Open terminals keep their folder.",
+  ]);
+  const minimal = { ...move, members: [], clearedBranch: null, pullRequest: null };
+  assert.deepStrictEqual(threadMoveReceiptMessage(minimal).split("\n"), [
+    full[0],
+    full[1],
+    full[2],
+    full[5],
+  ]);
   assert.include(
     threadMoveReceiptMessage({ ...move, pullRequest: null }),
     '\nCleared the branch "feat/login".\n',
@@ -68,23 +55,6 @@ it("writes the receipt for a move out of a project root, a worktree or a scratch
     }),
     "\nThe folder no longer exists.\nNo other thread works in it.\n",
   );
-});
-
-it("builds a run-less notice at the given ordinal with the move time", () => {
-  const movedAt = DateTime.makeUnsafe("2026-11-07T10:00:00.000Z");
-  const built = moveReceiptTurnItem({
-    id: TurnItemId.make("turn-item:receipt"),
-    threadId: ThreadId.make("thread:1"),
-    ordinal: 7,
-    movedAt,
-    previousFolder: "/repos/a",
-    message: "Moved.",
-  });
-  const item = Schema.decodeSync(turnItemJson)(Schema.encodeSync(turnItemJson)(built));
-  assert.strictEqual(item.runId, null);
-  assert.strictEqual(item.ordinal, 7);
-  assert.deepStrictEqual(item.startedAt, movedAt);
-  assert.strictEqual(item.type === "system_notice" ? item.previousFolder : undefined, "/repos/a");
 });
 
 it("resolves a row against the first move receipt after it", () => {

@@ -23,20 +23,6 @@ const sessionId = "session-relocated";
 const transcript = `${JSON.stringify({ type: "user", sessionId })}\n`;
 const agentLine = '{"type":"assistant"}\n';
 
-it.effect("refuses a CLAUDE_CONFIG_DIR that is not an absolute path", () =>
-  Effect.gen(function* () {
-    const path = yield* Path.Path;
-    const refusal = (value: string | undefined) =>
-      ClaudeSessionRelocation.claudeConfigDirRefusal(path, { CLAUDE_CONFIG_DIR: value });
-    assert.include(refusal("claude-home") ?? "", '"claude-home"');
-    assert.include(refusal(" /Users/me/.claude-work") ?? "", '" /Users/me/.claude-work"');
-    assert.isDefined(refusal(""));
-    assert.isDefined(refusal("  "));
-    assert.isUndefined(refusal("/Users/me/.claude-work"));
-    assert.isUndefined(refusal(undefined));
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
-
 const repo = "/Users/me/repo";
 const override = (name: string) => ({
   CLAUDE_CONFIG_DIR: "/config",

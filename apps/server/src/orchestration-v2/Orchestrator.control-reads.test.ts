@@ -34,6 +34,7 @@ import {
   orchestrationCommandsTotal,
 } from "../observability/Metrics.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { providerThread, runCreated, threadCreated } from "../project/ThreadMove.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { SHARED_WORKSPACE_RESTORE_MESSAGE } from "./CheckpointRestoreSafety.ts";
 import * as DelegatedTaskQuestionReactor from "./DelegatedTaskQuestionReactor.ts";
@@ -1690,41 +1691,28 @@ it.effect.each([
       const runId = RunId.make(`run:${name}`);
       const nodeId = NodeId.make(`node:${name}`);
       const now = yield* DateTime.now;
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make(`create-${name}`),
-        threadId,
-        projectId: ProjectId.make(`project:${name}`),
-        title: "Baseline restore",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: process.cwd(),
-        createdBy: "user",
-        creationSource: "web",
-      });
+      yield* projections.apply(
+        threadCreated({
+          threadId,
+          projectId: ProjectId.make(`project:${name}`),
+          worktreePath: process.cwd(),
+        }),
+      );
       yield* projections.apply({
         id: EventId.make(`${name}:provider-thread`),
         type: "provider-thread.updated",
         threadId,
         occurredAt: now,
         payload: {
-          id: providerThreadId,
+          ...providerThread({
+            id: providerThreadId,
+            threadId,
+            providerInstanceId: instanceId,
+            nativeId: name,
+          }),
           driver: adapter.driver,
-          providerInstanceId: instanceId,
           providerSessionId: ProviderSessionId.make(`session:${name}`),
-          appThreadId: threadId,
-          ownerNodeId: null,
           nativeThreadRef: null,
-          nativeConversationHeadRef: null,
-          status: "idle",
-          firstRunOrdinal: 1,
-          lastRunOrdinal: 1,
-          handoffIds: [],
-          forkedFrom: null,
-          createdAt: now,
-          updatedAt: now,
         },
       });
       yield* projections.apply({
@@ -1766,30 +1754,18 @@ it.effect.each([
           capturedAt: now,
         },
       });
-      yield* projections.apply({
-        id: EventId.make(`${name}:run`),
-        type: "run.created",
-        threadId,
-        occurredAt: now,
-        payload: {
+      yield* projections.apply(
+        runCreated({
           id: runId,
           threadId,
           ordinal: 1,
           providerInstanceId: instanceId,
-          modelSelection,
           providerThreadId,
-          userMessageId: MessageId.make(`message:${name}`),
           rootNodeId: nodeId,
-          activeAttemptId: null,
-          status: "completed",
-          requestedAt: now,
-          startedAt: now,
-          completedAt: now,
-          checkpointId: null,
-          contextHandoffId: null,
-          ...(cwd === undefined ? {} : { cwd }),
-        },
-      });
+          cwd,
+          occurredAt: now,
+        }),
+      );
       const rollback = orchestrator.dispatch({
         type: "checkpoint.rollback",
         commandId: CommandId.make(`rollback-${name}`),

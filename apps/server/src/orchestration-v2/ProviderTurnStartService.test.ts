@@ -1504,16 +1504,13 @@ effectIt.effect.each([
     expect(harness.projection().runs.at(-1)?.status).toBe(
       hangs ? (row.willRetry === true ? "starting" : "failed") : "running",
     );
-    expect(harness.projection().turnItems.filter((item) => item.type === "error")).toMatchObject(
+    expect(
+      harness
+        .projection()
+        .turnItems.flatMap((item) => (item.type === "error" ? [item.failure.message] : [])),
+    ).toEqual(
       hangs && row.willRetry !== true
-        ? [
-            {
-              failure: {
-                message:
-                  "The source thread's Claude session is still being moved. Try again in a moment.",
-              },
-            },
-          ]
+        ? ["The source thread's Claude session is still being moved. Try again in a moment."]
         : [],
     );
   }),

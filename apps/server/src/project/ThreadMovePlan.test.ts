@@ -41,15 +41,9 @@ function projection(input: {
         worktreePath: input.worktreePath,
         providerInstanceId: input.claudeSession === undefined ? codex : claude,
         branch: input.branch,
-        ...(input.pullRequest
-          ? {
-              branchPullRequest: {
-                projectId: projectA,
-                repository: "t3tools/t3code",
-                ...input.pullRequest,
-              },
-            }
-          : {}),
+        branchPullRequest: input.pullRequest
+          ? { projectId: projectA, repository: "t3tools/t3code", ...input.pullRequest }
+          : undefined,
       }),
     ),
     providerThreads:
@@ -107,14 +101,11 @@ const plan = Effect.fn("ThreadMovePlanTest.plan")(function* (input: {
   });
 });
 
-type EventOf<T extends OrchestrationV2DomainEvent["type"]> =
-  OrchestrationV2DomainEvent extends infer Event
-    ? Event extends { readonly type: infer Type }
-      ? T extends Type
-        ? Event
-        : never
-      : never
-    : never;
+type EventOf<T, Event = OrchestrationV2DomainEvent> = Event extends { readonly type: infer Type }
+  ? T extends Type
+    ? Event
+    : never
+  : never;
 const ofType = <T extends OrchestrationV2DomainEvent["type"]>(
   events: ReadonlyArray<OrchestrationV2DomainEvent>,
   type: T,
@@ -178,6 +169,7 @@ it.effect.each([
         ["side", 3, null, from],
       ],
     );
+    assert.isTrue(notices.every((item) => item.startedAt === movedAt));
     assert.include(notices[0]?.message ?? "", `The next turn runs in ${receipt.folder}.`);
     assert.equal(
       notices[1]?.message,

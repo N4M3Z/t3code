@@ -1,6 +1,8 @@
 import { expect } from "@effect/vitest";
 import {
   EventId,
+  MessageId,
+  type NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
@@ -9,6 +11,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -122,6 +125,44 @@ export function codexSession(input: {
     createdAt,
     updatedAt: createdAt,
     lastError: null,
+  };
+}
+
+export function runCreated(input: {
+  readonly id: RunId;
+  readonly threadId: ThreadId;
+  readonly ordinal: number;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly providerThreadId?: ProviderThreadId | null | undefined;
+  readonly rootNodeId?: NodeId | null | undefined;
+  readonly cwd?: string | undefined;
+  readonly occurredAt?: DateTime.Utc | undefined;
+}) {
+  const occurredAt = input.occurredAt ?? createdAt;
+  return {
+    id: EventId.make(`run-created:${input.id}`),
+    type: "run.created" as const,
+    threadId: input.threadId,
+    providerInstanceId: input.providerInstanceId,
+    occurredAt,
+    payload: {
+      id: input.id,
+      threadId: input.threadId,
+      ordinal: input.ordinal,
+      providerInstanceId: input.providerInstanceId,
+      modelSelection: { instanceId: input.providerInstanceId, model: "gpt-5" },
+      providerThreadId: input.providerThreadId ?? null,
+      userMessageId: MessageId.make(`message:${input.id}`),
+      rootNodeId: input.rootNodeId ?? null,
+      activeAttemptId: null,
+      status: "completed" as const,
+      requestedAt: occurredAt,
+      startedAt: occurredAt,
+      completedAt: occurredAt,
+      checkpointId: null,
+      contextHandoffId: null,
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+    },
   };
 }
 

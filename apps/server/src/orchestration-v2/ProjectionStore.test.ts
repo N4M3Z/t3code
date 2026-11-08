@@ -56,6 +56,7 @@ import {
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 
 import { layerReaderDatabase, traceSqlRouting } from "../persistence/testkit/SqliteRouting.ts";
+import { runCreated, threadCreated } from "../project/ThreadMove.testkit.ts";
 
 const layerTest = Layer.mergeAll(
   ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
@@ -6927,68 +6928,37 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         threadId: ThreadId,
         fork: { readonly threadId: ThreadId; readonly runId: RunId } | null,
         historyOrigin?: "v1_import",
-      ) =>
-        projectionStore.apply({
-          id: EventId.make(`event:projection-fork-receipt:created:${threadId}`),
-          type: "thread.created",
+      ) => {
+        const created = threadCreated({
           threadId,
+          projectId,
+          worktreePath: null,
+          providerInstanceId,
+          parent: fork?.threadId,
+          kind: fork === null ? undefined : "fork",
+        });
+        return projectionStore.apply({
+          ...created,
           occurredAt: now,
           payload: {
-            createdBy: "user",
-            creationSource: "web",
-            id: threadId,
-            projectId,
-            title: "Fork receipt",
-            providerInstanceId,
-            modelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: null,
-            activeProviderThreadId: null,
+            ...created.payload,
             ...(historyOrigin === undefined ? {} : { historyOrigin }),
-            lineage: {
-              parentThreadId: fork?.threadId ?? null,
-              relationshipToParent: fork === null ? null : "fork",
-              rootThreadId: fork?.threadId ?? threadId,
-            },
             forkedFrom: fork === null ? null : { type: "run", ...fork },
-            createdAt: now,
-            updatedAt: now,
-            archivedAt: null,
-            settledOverride: null,
-            settledAt: null,
-            lastVisitedAt: null,
-            deletedAt: null,
           },
         });
-      const createRun = (threadId: ThreadId, runId: RunId, ordinal: number, cwd?: string) => {
-        const nodeId = NodeId.make(`node:${runId}`);
-        return projectionStore.apply({
-          id: EventId.make(`event:${runId}`),
-          type: "run.created",
-          threadId,
-          occurredAt: now,
-          payload: {
+      };
+      const createRun = (threadId: ThreadId, runId: RunId, ordinal: number, cwd?: string) =>
+        projectionStore.apply(
+          runCreated({
             id: runId,
             threadId,
             ordinal,
             providerInstanceId,
-            modelSelection,
-            providerThreadId: null,
-            userMessageId: MessageId.make(`message:${runId}`),
-            rootNodeId: nodeId,
-            activeAttemptId: null,
-            status: "completed",
-            requestedAt: now,
-            startedAt: now,
-            completedAt: now,
-            checkpointId: null,
-            contextHandoffId: null,
-            ...(cwd === undefined ? {} : { cwd }),
-          },
-        });
-      };
+            rootNodeId: NodeId.make(`node:${runId}`),
+            cwd,
+            occurredAt: now,
+          }),
+        );
       const addItem = (threadId: ThreadId, name: string, runId: RunId | null, ordinal: number) =>
         projectionStore.apply({
           id: EventId.make(`event:projection-fork-receipt:item:${name}`),

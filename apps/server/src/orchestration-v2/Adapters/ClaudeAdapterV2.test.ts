@@ -8690,11 +8690,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             usageSnapshotFrame(
               `msg_cwd_${ordinal}`,
               `00000000-0000-4000-8000-00000000080${ordinal}`,
-              {
-                ...zeroUsage,
-                input_tokens: 1_000,
-                output_tokens: 10,
-              },
+              { ...zeroUsage, input_tokens: 1_000, output_tokens: 10 },
             ),
           );
           yield* harness.offerAndWait(
@@ -12723,9 +12719,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           : path.join(second, "prompt.md");
       const reading = yield* Deferred.make<void>();
       const gate = yield* Deferred.make<void>();
-      if (gatedRead !== undefined) {
+      if (gatedRead !== undefined)
         yield* fileSystem.writeFileString(gatedRead, "Prompt sentinel\n");
-      }
       let closes = 0;
       const handlingLimit = yield* Deferred.make<void>();
       const releaseLimit = yield* Deferred.make<void>();
@@ -12733,14 +12728,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const cleanupGate = yield* Deferred.make<void>();
       let holdNextCleanup = false;
       const harness = yield* makeWakeHarnessWithOptions({
-        ...(cause === "background work"
-          ? {}
-          : {
-              settings: {
-                ...DEFAULT_CLAUDE_SETTINGS,
-                launchArgs: "--append-system-prompt-file prompt.md",
-              },
-            }),
+        settings: {
+          ...DEFAULT_CLAUDE_SETTINGS,
+          launchArgs: cause === "background work" ? "" : "--append-system-prompt-file prompt.md",
+        },
         freshQueueOnReopen: true,
         close: (messages) =>
           Effect.sync(() => {
@@ -18281,21 +18272,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   );
 
   it.effect.each([
-    {
-      storage: "its record",
-      recorded: "/repo/a",
-      history: "/repo/h",
-      resumed: true,
-      dir: "/repo/a",
-    },
-    { storage: "run history", history: "/repo/h", resumed: true, dir: "/repo/h" },
-    {
-      storage: "the folder its query created",
-      history: "/repo/h",
-      resumed: false,
-      dir: "/workspace",
-    },
-  ])("projects workflow member threads after resuming a restarted session from $storage", (row) =>
+    { from: "its record", recorded: "/repo/a", history: "/repo/h", resumed: true, dir: "/repo/a" },
+    { from: "run history", history: "/repo/h", resumed: true, dir: "/repo/h" },
+    { from: "the folder its query created", history: "/repo/h", resumed: false, dir: "/workspace" },
+  ])("projects workflow member threads after resuming a restarted session from $from", (row) =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeWorkflowHarnessWithOptions({

@@ -5,7 +5,6 @@ import {
   CheckpointScopeId,
   CommandId,
   EventId,
-  MessageId,
   NodeId,
   ProjectId,
   ProviderInstanceId,
@@ -27,7 +26,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
-import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
@@ -61,6 +59,7 @@ import {
   needsProject,
   providerThread,
   refusal,
+  runCreated,
   threadCreated,
 } from "./ThreadMove.testkit.ts";
 import * as ThreadMoveService from "./ThreadMoveService.ts";
@@ -122,12 +121,8 @@ const layerFolders = Layer.unwrap(
     });
   }),
 );
-const layerProviders = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+const layerProviders = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
   getInstance: (instanceId) => Effect.succeed(instanceId === codexId ? codexInstance : undefined),
-  listInstances: Effect.succeed([codexInstance]),
-  listUnavailable: Effect.succeed([]),
-  streamChanges: Stream.empty,
-  subscribeChanges: Effect.never,
 });
 const layerTest = Layer.effect(ThreadMoveService.ThreadMoveService, ThreadMoveService.make).pipe(
   Layer.provideMerge(Layer.mergeAll(layerThreads, layerFolders, layerProviders)),
@@ -135,11 +130,8 @@ const layerTest = Layer.effect(ThreadMoveService.ThreadMoveService, ThreadMoveSe
   Layer.provideMerge(
     Layer.mergeAll(
       LegacyV1ThreadImporter.layer.pipe(
-        Layer.provideMerge(
-          EventSink.layer.pipe(
-            Layer.provideMerge(Layer.merge(EventStore.layer, ProjectionStore.layer)),
-          ),
-        ),
+        Layer.provideMerge(EventSink.layer),
+        Layer.provideMerge(Layer.merge(EventStore.layer, ProjectionStore.layer)),
       ),
       EffectOutbox.layer,
       ProjectStore.layer,
@@ -157,19 +149,16 @@ const layerTest = Layer.effect(ThreadMoveService.ThreadMoveService, ThreadMoveSe
       }),
     ),
   ),
-  Layer.provideMerge(
-    ProjectEnrichmentService.layer.pipe(
-      Layer.provide(
-        Layer.merge(
-          Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
-            resolve: () => Effect.succeed(null),
-          }),
-          Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
-            invalidate: () => Effect.void,
-            resolvePath: () => Effect.succeed(null),
-          }),
-        ),
-      ),
+  Layer.provideMerge(ProjectEnrichmentService.layer),
+  Layer.provide(
+    Layer.mergeAll(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: () => Effect.succeed(null),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
+        resolvePath: () => Effect.succeed(null),
+      }),
     ),
   ),
   Layer.provideMerge(ServerSettings.layerTest()),
@@ -258,19 +247,17 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
 
       // The decision reads the settings once itself; the environment resolver's read comes second.
       const settings = yield* ServerSettings.ServerSettingsService;
-      const reads = yield* Ref.make(0);
+      let reads = 0;
       const unresolved = yield* ThreadMoveService.make.pipe(
         Effect.provideService(ServerSettings.ServerSettingsService, {
           ...settings,
-          getSettings: Ref.updateAndGet(reads, (count) => count + 1).pipe(
-            Effect.flatMap((count) =>
-              count === 2
-                ? new ServerSettingsError({
-                    settingsPath: at("settings.json"),
-                    operation: "read-file",
-                  })
-                : settings.getSettings,
-            ),
+          getSettings: Effect.suspend(() =>
+            ++reads === 2
+              ? new ServerSettingsError({
+                  settingsPath: at("settings.json"),
+                  operation: "read-file",
+                })
+              : settings.getSettings,
           ),
         }),
       );
@@ -372,11 +359,7 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
       "the added project is deleted before the lock",
       ({ projects, key }) =>
         projects
-          .delete({
-            commandId: CommandId.make(`recheck:delete:${key}`),
-            projectId: key,
-            force: true,
-          })
+          .delete({ commandId: CommandId.make(`recheck:${key}`), projectId: key, force: true })
           .pipe(Effect.orDie),
       () => refusal(`The destination project no longer exists. The project "plain" was added.`),
     ],
@@ -434,11 +417,7 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
           }),
         );
         const deletion = yield* gatedProjects
-          .delete({
-            commandId: CommandId.make("deletion:delete-b"),
-            projectId: b.id,
-            force: true,
-          })
+          .delete({ commandId: CommandId.make("deletion:delete-b"), projectId: b.id, force: true })
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(deleteReadThreads);
         const moveAtLock = yield* Deferred.make<void>();
@@ -472,7 +451,7 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
           .pipe(Effect.flip);
         assert.equal(notEmpty._tag, "ProjectNotEmptyError");
         yield* projects.delete({
-          commandId: CommandId.make("deletion:delete-c-force"),
+          commandId: CommandId.make("deletion:force-c"),
           projectId: c.id,
           force: true,
         });
@@ -678,29 +657,15 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
           nativeStorageFolder,
         }),
       });
-      const run = (ordinal: number, name: string, cwd?: string) => ({
-        ...base,
-        id: EventId.make(`storage:run:${ordinal}`),
-        type: "run.created" as const,
-        payload: {
+      const run = (ordinal: number, name: string, cwd?: string) =>
+        runCreated({
           id: RunId.make(`storage:run:${ordinal}`),
           threadId,
           ordinal,
           providerInstanceId,
-          modelSelection: { instanceId: providerInstanceId, model: "claude-opus-5-5" },
           providerThreadId: providerThreadId(name),
-          userMessageId: MessageId.make(`storage:message:${ordinal}`),
-          rootNodeId: null,
-          activeAttemptId: null,
-          status: "completed" as const,
-          requestedAt: createdAt,
-          startedAt: createdAt,
-          completedAt: createdAt,
-          checkpointId: null,
-          contextHandoffId: null,
-          ...(cwd === undefined ? {} : { cwd }),
-        },
-      });
+          cwd,
+        });
       const attempt = (ordinal: number, name: string, nativeThreadId?: string) => ({
         ...base,
         id: EventId.make(`storage:attempt:${ordinal}`),

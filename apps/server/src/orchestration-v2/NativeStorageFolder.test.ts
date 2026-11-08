@@ -13,6 +13,7 @@ import { expect, vi } from "vite-plus/test";
 import type * as EventStore from "./EventStore.ts";
 import { nativeStorageFolders } from "./NativeStorageFolder.ts";
 
+const claude = ProviderDriverKind.make("claudeAgent");
 const row = ProviderThreadId.make("provider-thread:claude");
 const otherRow = ProviderThreadId.make("provider-thread:other");
 const codexRow = ProviderThreadId.make("provider-thread:codex");
@@ -36,12 +37,8 @@ const rootScope = (ordinal: number, cwd: string, providerThreadId = row) => ({
 const providerThread = (nativeId: string, id = row, recorded?: string) =>
   ({
     id,
-    driver: ProviderDriverKind.make("claudeAgent"),
-    nativeThreadRef: {
-      driver: ProviderDriverKind.make("claudeAgent"),
-      nativeId,
-      strength: "strong",
-    },
+    driver: claude,
+    nativeThreadRef: { driver: claude, nativeId, strength: "strong" },
     ...(recorded === undefined ? {} : { nativeStorageFolder: recorded }),
   }) as OrchestrationV2ProviderThread;
 

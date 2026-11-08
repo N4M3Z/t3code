@@ -422,6 +422,7 @@ it.effect("moves scheduled tasks after a failed store write while the task keeps
     const from = ProjectId.make("project:task-move-from");
     const to = ProjectId.make("project:task-move-to");
     const sends = yield* Ref.make<ReadonlyArray<ProjectId>>([]);
+    const shell = yield* Ref.make({ projectId: from, deletedAt: null, archivedAt: null });
     // The thread already works in `to`; a send to any other project finds no thread there.
     const layerTasks = ScheduledTaskService.layer.pipe(
       Layer.provide(
@@ -442,7 +443,7 @@ it.effect("moves scheduled tasks after a failed store write while the task keeps
                       ),
                 ),
               ),
-            getThreadShell: () => Effect.succeed({ projectId: to } as never),
+            getThreadShell: () => Ref.get(shell) as never,
           }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -488,6 +489,7 @@ it.effect("moves scheduled tasks after a failed store write while the task keeps
         runtimeMode: "full-access",
         interactionMode: "default",
       });
+      yield* Ref.update(shell, (current) => ({ ...current, projectId: to }));
       const listedUnder = sql<{ readonly project_id: string }>`
         SELECT project_id FROM scheduled_tasks WHERE task_id = ${task.id}
       `.pipe(Effect.map((rows) => rows[0]?.project_id));

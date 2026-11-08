@@ -3015,15 +3015,13 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.threadsMove]: (input) =>
-          startup
-            .enqueueCommand(threadMove.move(input))
-            .pipe(
-              Effect.mapError((cause) =>
-                cause._tag === "ThreadMoveError"
-                  ? cause
-                  : new ThreadMoveError({ message: cause.message, cause }),
-              ),
-            ),
+          Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
+            Effect.andThen(startup.enqueueCommand(threadMove.move(input))),
+            Effect.catchTags({
+              ServerRuntimeStartupError: (cause) =>
+                new ThreadMoveError({ message: "Failed to move the thread.", cause }),
+            }),
+          ),
         [WS_METHODS.shellOpenInEditor]: (input) => externalLauncher.launchEditor(input),
         [WS_METHODS.filesystemGetMetadata]: (input) => workspaceFileSystem.getMetadata(input),
         [WS_METHODS.filesystemBrowse]: (input) =>

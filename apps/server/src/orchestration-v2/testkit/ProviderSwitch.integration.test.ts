@@ -2223,33 +2223,25 @@ describe("orchestration v2 provider switching", () => {
             ["running", "queued"],
           );
           assert.equal(queued.thread.providerInstanceId, CODEX_MODEL_SELECTION.instanceId);
-          const sourceProviderThread = queued.providerThreads.find(
+          const sourceNativeRef = queued.providerThreads.find(
             (providerThread) => providerThread.id === queued.runs[0]?.providerThreadId,
-          )!;
-          const sourceNativeRef = sourceProviderThread.nativeThreadRef;
+          )?.nativeThreadRef;
           assert.isNotNull(sourceNativeRef);
           const now = yield* DateTime.now;
           yield* eventSink.write({
             events: [
-              {
-                id: EventId.make("event:queued-account-switch:storage-folder"),
-                type: "provider-thread.updated",
-                threadId: queuedThreadId,
-                occurredAt: now,
-                payload: { ...sourceProviderThread, nativeStorageFolder: source },
-              },
-              {
-                id: EventId.make("event:queued-account-switch:target-storage-folder"),
-                type: "provider-thread.updated",
+              ...[source, target].map((nativeStorageFolder, index) => ({
+                id: EventId.make(`event:queued-account-switch:storage-folder-${index}`),
+                type: "provider-thread.updated" as const,
                 threadId: queuedThreadId,
                 occurredAt: now,
                 payload: {
                   ...queued.providerThreads.find(
-                    (providerThread) => providerThread.id === queued.runs[1]?.providerThreadId,
+                    (providerThread) => providerThread.id === queued.runs[index]?.providerThreadId,
                   )!,
-                  nativeStorageFolder: target,
+                  nativeStorageFolder,
                 },
-              },
+              })),
               {
                 id: EventId.make("event:queued-account-switch:first-complete"),
                 type: "run.updated",

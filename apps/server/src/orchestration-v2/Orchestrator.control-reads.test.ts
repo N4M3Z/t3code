@@ -1685,19 +1685,14 @@ it.effect.each([
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const name = `baseline-restore-${firstRun}`;
       const threadId = ThreadId.make(`thread:${name}`);
+      const projectId = ProjectId.make(`project:${name}`);
       const providerThreadId = ProviderThreadId.make(`provider-thread:${name}`);
       const scopeId = CheckpointScopeId.make(`scope:${name}`);
       const checkpointId = CheckpointId.make(`checkpoint:${name}`);
       const runId = RunId.make(`run:${name}`);
       const nodeId = NodeId.make(`node:${name}`);
       const now = yield* DateTime.now;
-      yield* projections.apply(
-        threadCreated({
-          threadId,
-          projectId: ProjectId.make(`project:${name}`),
-          worktreePath: process.cwd(),
-        }),
-      );
+      yield* projections.apply(threadCreated({ threadId, projectId, worktreePath: process.cwd() }));
       yield* projections.apply({
         id: EventId.make(`${name}:provider-thread`),
         type: "provider-thread.updated",

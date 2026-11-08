@@ -43,14 +43,14 @@ const providerThread = (nativeId: string, id = row, recorded?: string) =>
   }) as OrchestrationV2ProviderThread;
 
 const runs = [run(4, "/repo/d"), run(1), run(3, "/repo/b"), run(2)];
-const checkpointScopes = [
+const events = [
   rootScope(4, "/repo/d"),
   rootScope(3, "/repo/queued"),
   rootScope(2, "/repo/a"),
   rootScope(1, "/repo/other-queued", otherRow),
   rootScope(1, "/repo/other", otherRow),
   { kind: "subagent" as const, runId: RunId.make("run:1"), providerThreadId: row, cwd: "/repo/x" },
-];
+].map((payload) => ({ event: { type: "checkpoint-scope.created", payload } }) as never);
 
 it.effect.each([
   {
@@ -98,13 +98,7 @@ it.effect.each([
   },
 ])("$name", ({ providerThreads, attempts, folders, reads }) =>
   Effect.gen(function* () {
-    const read = vi.fn<EventStore.EventStoreV2Shape["read"]>(() =>
-      Stream.fromIterable(
-        checkpointScopes.map(
-          (payload) => ({ event: { type: "checkpoint-scope.created", payload } }) as never,
-        ),
-      ),
-    );
+    const read = vi.fn<EventStore.EventStoreV2Shape["read"]>(() => Stream.fromIterable(events));
     const resolved = yield* nativeStorageFolders({ read }, ThreadId.make("thread"), {
       runs,
       attempts,

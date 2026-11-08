@@ -2721,24 +2721,21 @@ it.effect("records a provider's input rejection at turn start and the folder it 
         Deferred.succeed(ingesting, undefined).pipe(Effect.andThen(Effect.never)),
       afterStart: (closed) => Deferred.succeed(closed, undefined),
       startTurn: (turnInput) =>
-        (turnInput.recordNativeStorageFolder?.("/repo/b") ?? Effect.void).pipe(
-          Effect.andThen(Deferred.await(ingesting)),
-          Effect.andThen(
-            Effect.fail(
-              new ProviderAdapter.ProviderAdapterTurnStartError({
-                driver,
-                threadId: turnInput.threadId,
-                providerThreadId: turnInput.providerThread.id,
-                runId: turnInput.runId,
-                cause: new CodexAppServerRequestError({
-                  code: -32600,
-                  errorMessage: rejection,
-                  method: "thread/goal/set",
-                }),
-              }),
-            ),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* turnInput.recordNativeStorageFolder?.("/repo/b") ?? Effect.void;
+          yield* Deferred.await(ingesting);
+          return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
+            driver,
+            threadId: turnInput.threadId,
+            providerThreadId: turnInput.providerThread.id,
+            runId: turnInput.runId,
+            cause: new CodexAppServerRequestError({
+              code: -32600,
+              errorMessage: rejection,
+              method: "thread/goal/set",
+            }),
+          });
+        }),
     });
     assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
     const error = written.find((item) => item.type === "error");

@@ -509,6 +509,10 @@ function makeLocalCommandHarness(input: {
       ? {}
       : { nativeStorageFolder: input.sideChat.parentStorageFolder }),
   };
+  const movedParent = {
+    ...parentProviderThread,
+    nativeStorageFolder: "/repo/side-chat-parent-moved",
+  };
   const parentProviderTurn = (ordinal: number, attemptRunId: RunId) => ({
     attempt: {
       ...projection.attempts[0]!,
@@ -1025,20 +1029,10 @@ function makeLocalCommandHarness(input: {
               ? Effect.void
               : Deferred.succeed(relocationAwaited, undefined).pipe(
                   Effect.andThen(Deferred.await(relocation)),
-                  Effect.andThen(
-                    Effect.sync(() => {
-                      pendingRelocations = [];
-                      parentRecords = {
-                        ...parentRecords,
-                        providerThreads: [
-                          {
-                            ...parentProviderThread,
-                            nativeStorageFolder: "/repo/side-chat-parent-moved",
-                          },
-                        ],
-                      };
-                    }),
-                  ),
+                  Effect.map(() => {
+                    pendingRelocations = [];
+                    parentRecords = { ...parentRecords, providerThreads: [movedParent] };
+                  }),
                 ),
         }),
         IdAllocator.layer,
@@ -1453,9 +1447,7 @@ effectIt.effect.each([
 );
 
 effectIt.effect.each([
-  // The parent's runs predate run.cwd; its first run's scope event keeps the folder.
   { folder: "/repo/side-chat-parent", eventReads: 1 },
-  // Only the first run predates run.cwd; the later run's cwd decides without the events.
   { sideChat: { parentRunCwd: "/repo/parent-run" }, folder: "/repo/parent-run" },
   { relocation: "settles", folder: "/repo/side-chat-parent-moved", recorded: true },
   { driver: "codex", relocation: "settles" },

@@ -54,7 +54,6 @@ const errno = (code: string, pathOrDescriptor: string, method = "rename") =>
 const threadId = ThreadId.make("thread:claude-relocation");
 const driver = ProviderDriverKind.make("claudeAgent");
 const instanceId = ProviderInstanceId.make("claudeAgent");
-// The handler reads the row's identity and republishes the rest; the mocked sink ignores it.
 const providerThread = {
   id: ProviderThreadId.make("provider-thread:claude-relocation"),
   driver,
@@ -119,8 +118,6 @@ const setup = Effect.fnUntraced(function* () {
         ),
       ),
     );
-  // Where the transcript and the subagent folder are, what follows the transcript's records,
-  // and how many times the provider row recorded the new folder.
   const expectLayout = Effect.fnUntraced(function* (
     transcriptAt: "old" | "new" | "none",
     subagentsAt: "old" | "new" | "none",
@@ -138,16 +135,15 @@ const setup = Effect.fnUntraced(function* () {
     assert.equal(agent, subagentsAt === "new" ? agentLine : "");
     assert.deepEqual(writes, Array(rows).fill(newFolder));
   });
-  const paths = { oldDir, newDir, oldFile, newFile, oldSubs, newSubs };
-  return { fs, path, record, run, expectLayout, ...paths };
+  return { fs, record, run, expectLayout, oldDir, newDir, oldFile, newFile, oldSubs, newSubs };
 });
 
 it.effect("supersedes an occupant and a stale subagent folder in the new folder's storage", () =>
   Effect.gen(function* () {
-    const { fs, path, newDir, newFile, newSubs, run, expectLayout } = yield* setup();
+    const { fs, newDir, newFile, newSubs, run, expectLayout } = yield* setup();
     assert.isTrue(newDir.endsWith("-caf-"));
     yield* fs.makeDirectory(newSubs, { recursive: true });
-    yield* fs.writeFileString(path.join(newSubs, "stale.jsonl"), "stale\n");
+    yield* fs.writeFileString(`${newSubs}/stale.jsonl`, "stale\n");
     yield* fs.writeFileString(newFile, "occupant\n");
 
     yield* run(fs);

@@ -32,18 +32,14 @@ function run(ordinal: number, extra: Partial<OrchestrationV2Run> = {}): Orchestr
 const codexThreadId = ProviderThreadId.make("provider-thread:codex");
 const opencodeThreadId = ProviderThreadId.make("provider-thread:opencode");
 
+type Runs = ReadonlyArray<OrchestrationV2Run>;
 const latest = (
-  runs: ReadonlyArray<OrchestrationV2Run>,
-  options: {
-    readonly accepted?: ReadonlyArray<OrchestrationV2Run>;
-    readonly compactions?: ReadonlyArray<OrchestrationV2Run>;
-    readonly goals?: ReadonlyArray<OrchestrationV2Run>;
-    readonly onOpencode?: ReadonlyArray<OrchestrationV2Run>;
-  } = {},
+  runs: Runs,
+  options: Partial<Record<"accepted" | "compactions" | "goals" | "onOpencode", Runs>> = {},
 ) =>
   latestCountedRunFolder({
     runs,
-    attempts: runs.map((source) => ({
+    attempts: [...runs, ...(options.accepted ?? [])].map((source) => ({
       id: source.activeAttemptId!,
       runId: source.id,
       providerThreadId: options.onOpencode?.includes(source) ? opencodeThreadId : codexThreadId,
@@ -68,53 +64,27 @@ const latest = (
   });
 
 it("takes the folder of the latest run the provider accepted that still stands", () => {
-  const first = run(1);
-  const second = run(2);
+  const r1 = run(1);
+  const r2 = run(2);
   const starting = run(3, { completedAt: null });
   assert.strictEqual(latest([]), undefined);
-  assert.strictEqual(latest([first], { accepted: [] }), undefined);
-  assert.strictEqual(latest([first, second, run(3, { status: "rolled_back" })]), "/folder/2");
-  assert.strictEqual(latest([first, run(2, { status: "interrupted" })]), "/folder/2");
-  assert.strictEqual(latest([first, second], { accepted: [first] }), "/folder/1");
-  assert.strictEqual(latest([first, run(2, { cwd: undefined })]), "/folder/1");
-  assert.strictEqual(
-    latest([first, run(2, { restartContinuationOfRunId: first.id })]),
-    "/folder/1",
-  );
-  assert.strictEqual(latest([first, second], { compactions: [second] }), "/folder/1");
-  assert.strictEqual(
-    latest([run(1, { completedAt: DateTime.makeUnsafe(3000) }), second]),
-    "/folder/1",
-  );
+  assert.strictEqual(latest([r1], { accepted: [] }), undefined);
+  assert.strictEqual(latest([r1, r2, run(3, { status: "rolled_back" })]), "/folder/2");
+  assert.strictEqual(latest([r1, run(2, { status: "interrupted" })]), "/folder/2");
+  assert.strictEqual(latest([r1, r2], { accepted: [r1] }), "/folder/1");
+  assert.strictEqual(latest([r1, run(2, { cwd: undefined })]), "/folder/1");
+  assert.strictEqual(latest([r1, run(2, { restartContinuationOfRunId: r1.id })]), "/folder/1");
+  assert.strictEqual(latest([r1, r2], { compactions: [r2] }), "/folder/1");
+  assert.strictEqual(latest([run(1, { completedAt: DateTime.makeUnsafe(3000) }), r2]), "/folder/1");
   // A /goal run is skipped only when the driver that ran it parses /goal.
-  const goal = { accepted: [first, second], goals: [second] };
-  assert.strictEqual(
-    latest([first, second, starting], { ...goal, onOpencode: [first, second] }),
-    "/folder/2",
-  );
-  assert.strictEqual(
-    latest([first, second, starting], { ...goal, onOpencode: [starting] }),
-    "/folder/1",
-  );
+  const goal = { accepted: [r1, r2], goals: [r2] };
+  assert.strictEqual(latest([r1, r2, starting], { ...goal, onOpencode: [r1, r2] }), "/folder/2");
+  assert.strictEqual(latest([r1, r2, starting], { ...goal, onOpencode: [starting] }), "/folder/1");
 });
 
 it("counts a run the provider accepted on an attempt a steer later replaced", () => {
   const steered = run(1, { activeAttemptId: RunAttemptId.make("attempt:1:steer") });
-  const accepted = {
-    id: RunAttemptId.make("attempt:1"),
-    runId: steered.id,
-    providerThreadId: codexThreadId,
-  };
-  assert.strictEqual(
-    latestCountedRunFolder({
-      runs: [steered],
-      attempts: [accepted, { ...accepted, id: steered.activeAttemptId! }],
-      providerTurns: [{ runAttemptId: accepted.id }],
-      providerThreads: [],
-      messages: [],
-    }),
-    "/folder/1",
-  );
+  assert.strictEqual(latest([steered], { accepted: [run(1)] }), "/folder/1");
 });
 
 it.effect(

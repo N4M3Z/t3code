@@ -2664,9 +2664,7 @@ const makeParkingScheduler = Effect.gen(function* () {
       };
     },
   };
-  const parkAfter = (ops: number) => {
-    yieldAfter = ops;
-  };
+  const parkAfter = (ops: number) => void (yieldAfter = ops);
   return { scheduler, parked, parkAfter };
 });
 
@@ -3365,10 +3363,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   ),
                 ),
               );
-              const offer: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"] = (
-                message,
-                onQueued,
-              ) =>
+              const offer = (message: SDKUserMessage, onQueued?: () => void) =>
                 (options?.offer?.(message, onQueued) ?? Effect.void).pipe(
                   Effect.andThen(Effect.sync(() => void offeredMessages.push(message))),
                   Effect.andThen(changes.notify),
@@ -3524,10 +3519,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
   const wakeTurnInput = (
-    harness: {
-      readonly threadId: ThreadId;
-      readonly providerThread: OrchestrationV2ProviderThread;
-    },
+    harness: { threadId: ThreadId; providerThread: OrchestrationV2ProviderThread },
     now: DateTime.Utc,
     attempt: string,
     providerTurnOrdinal: number,
@@ -3562,39 +3554,30 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const configDir = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-claude-storage-folder-config-",
-        });
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-old-root-" });
         const sessionId = "22222222-2222-4222-8222-222222222222";
         const projectDir = path.join(configDir, "projects", "-repo-a");
         const question = "cccccccc-0000-4000-8000-000000000001";
         yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+        const entry = (type: string, uuid: string, parent: string | null, content: unknown) =>
+          JSON.stringify({
+            type,
+            uuid,
+            parentUuid: parent,
+            message: { role: type, content },
+            sessionId,
+            cwd: "/repo/a",
+            isSidechain: false,
+            timestamp: "2026-11-01T00:00:00.000Z",
+          });
         yield* fileSystem.writeFileString(
           path.join(projectDir, `${sessionId}.jsonl`),
           [
-            {
-              type: "user",
-              uuid: question,
-              parentUuid: null,
-              message: { role: "user", content: "Remember the number 42." },
-            },
-            {
-              type: "assistant",
-              uuid: "cccccccc-0000-4000-8000-000000000002",
-              parentUuid: question,
-              message: { role: "assistant", content: [{ type: "text", text: "Noted." }] },
-            },
-          ]
-            .map((entry) =>
-              JSON.stringify({
-                ...entry,
-                sessionId,
-                cwd: "/repo/a",
-                isSidechain: false,
-                timestamp: "2026-11-01T00:00:00.000Z",
-              }),
-            )
-            .join("\n"),
+            entry("user", question, null, "Remember the number 42."),
+            entry("assistant", "cccccccc-0000-4000-8000-000000000002", question, [
+              { type: "text", text: "Noted." },
+            ]),
+          ].join("\n"),
         );
         const harness = yield* makeWakeHarnessWithOptions({
           environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
@@ -3603,11 +3586,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const forked = yield* harness.runtime.forkThread({
           sourceProviderThread: {
             ...harness.providerThread,
-            nativeThreadRef: {
-              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-              nativeId: sessionId,
-              strength: "strong",
-            },
+            nativeThreadRef: { ...harness.providerThread.nativeThreadRef!, nativeId: sessionId },
             ...(recorded === undefined ? {} : { nativeStorageFolder: recorded }),
           },
           targetThreadId: ThreadId.make("thread-claude-storage-folder-root-edit-fork"),
@@ -6298,10 +6277,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Effect.gen(function* () {
           let closes = 0;
           const harness = yield* makeWakeHarnessWithOptions({
-            close: () =>
-              Effect.sync(() => {
-                closes++;
-              }),
+            close: () => Effect.sync(() => closes++),
           });
           const now = yield* DateTime.now;
           const normal = {
@@ -8685,21 +8661,24 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.lengthOf(harness.processQueues, 2);
           assert.deepEqual(closedProcesses, [harness.sdkMessages]);
         }
-        if (!continuation) {
-          yield* harness.offerAndWait(
-            usageSnapshotFrame(
-              `msg_cwd_${ordinal}`,
-              `00000000-0000-4000-8000-00000000080${ordinal}`,
-              { ...zeroUsage, input_tokens: 1_000, output_tokens: 10 },
-            ),
-          );
-          yield* harness.offerAndWait(
-            makeResultFrame({
-              uuid: `00000000-0000-4000-8000-00000000081${ordinal}`,
-              result: "Done.",
-            }),
-          );
-        }
+        const offer = continuation ? () => Effect.void : harness.offerAndWait;
+        yield* offer(
+          usageSnapshotFrame(
+            `msg_cwd_${ordinal}`,
+            `00000000-0000-4000-8000-00000000080${ordinal}`,
+            {
+              ...zeroUsage,
+              input_tokens: 1_000,
+              output_tokens: 10,
+            },
+          ),
+        );
+        yield* offer(
+          makeResultFrame({
+            uuid: `00000000-0000-4000-8000-00000000081${ordinal}`,
+            result: "Done.",
+          }),
+        );
         assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
       }
       assert.lengthOf(harness.liveSelectionChanges, branch === "selection-update" ? 2 : 0);
@@ -12625,7 +12604,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect.each(["its folder", "a new folder"])("starts the wake run in %s", (folder) =>
+  it.effect.each(["/workspace", "/new-workspace"])("starts the wake run in %s", (cwd) =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
@@ -12662,10 +12641,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             providerTurnOrdinal: 2,
             messageCreatedBy: "agent",
             messageCreationSource: "provider",
-            runtimePolicy: {
-              ...CLAUDE_TEST_RUNTIME_POLICY,
-              cwd: folder === "its folder" ? CLAUDE_TEST_RUNTIME_POLICY.cwd : "/new-workspace",
-            },
+            runtimePolicy: { ...CLAUDE_TEST_RUNTIME_POLICY, cwd },
           }),
         );
         assert.lengthOf(harness.processQueues, 1);
@@ -12734,9 +12710,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         },
         freshQueueOnReopen: true,
         close: (messages) =>
-          Effect.sync(() => {
-            closes++;
-          }).pipe(Effect.andThen(Queue.shutdown(messages))),
+          Effect.sync(() => closes++).pipe(Effect.andThen(Queue.shutdown(messages))),
         // Holds one turn's scope cleanup behind a gate, as a slow finalizer would.
         modelCatalog: Effect.serviceOption(Scope.Scope).pipe(
           Effect.tap((scope) => {

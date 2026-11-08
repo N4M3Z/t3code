@@ -155,17 +155,14 @@ const confirm = {
   to: "/repo/app",
   staysOnDisk: "The worktree stays on disk at /worktrees/w.",
   wayBack: "add-project",
-  otherThreads: [],
+  otherThreads: [{ threadId, title: "Fork" }],
 } as const satisfies ThreadMoveResult;
 const moved = { _tag: "moved", folder: "/repo/app", members: [] } as const;
 
 it("runThreadMove asks each question once, keeps every flag, and stops at a decline", async () => {
   const calls: ThreadMoveInput[] = [];
   const answers: ReadonlyArray<ThreadMoveResult> = [needsProject, confirm, moved];
-  const move = async (input: ThreadMoveInput) => {
-    calls.push(input);
-    return answers[calls.length - 1]!;
-  };
+  const move = async (input: ThreadMoveInput) => answers[calls.push(input) - 1]!;
   expect(await runThreadMove(request, move, async () => true)).toBe(moved);
   expect(calls).toEqual([
     request,
@@ -186,14 +183,7 @@ it("threadMoveQuestionText names nesting, folder left, destination, way back and
   expect(threadMoveQuestionText(nested)).toBe(
     "Create a project nested in App for /repo/app and move this thread there?",
   );
-  expect(
-    threadMoveQuestionText({
-      ...confirm,
-      to: null,
-      wayBack: "none",
-      otherThreads: [{ threadId, title: "Fork" }],
-    }),
-  ).toBe(
+  expect(threadMoveQuestionText({ ...confirm, to: null, wayBack: "none" })).toBe(
     [
       "Move this thread out of /worktrees/w?",
       "Its next turn runs in a new scratch folder.",

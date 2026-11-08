@@ -39,8 +39,6 @@ const ENV = EnvironmentId.make("env-1");
 const THREAD = ThreadId.make("thread-1");
 const ROUTE_KEY = `${ENV}:${THREAD}`;
 const DRAFT_TARGET = scopeThreadRef(ENV, THREAD);
-const refused = { _tag: "refused", reason: "Try again when the queued run ends." } as const;
-
 type Input = Parameters<typeof useComposerSend>[0];
 type Send = ReturnType<typeof useComposerSend>["onSend"];
 
@@ -50,11 +48,9 @@ function Harness(props: { readonly input: Input; readonly send: RefObject<Send |
   return null;
 }
 
-async function setup(options: {
-  readonly folderMove?: boolean;
-  readonly editingQueuedMessage?: boolean;
-  readonly pendingQuestion?: boolean;
-}) {
+type Options = Partial<Record<"folderMove" | "editingQueuedMessage" | "pendingQuestion", boolean>>;
+
+async function setup(options: Options) {
   mocks.move.mockReset();
   mocks.startTurn.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
@@ -139,15 +135,12 @@ it.each([
 
   await act(send);
 
-  expect(saveEdit).not.toHaveBeenCalled();
-  expect(answer).not.toHaveBeenCalled();
-  expect(mocks.startTurn).not.toHaveBeenCalled();
-  expect(mocks.move).not.toHaveBeenCalled();
+  const untouched = [saveEdit, answer, mocks.startTurn, mocks.move];
+  for (const spy of untouched) expect(spy).not.toHaveBeenCalled();
   expect(toast).toHaveBeenCalledWith(
     expect.objectContaining({ title: "Thread not moved", description: scenario.reason }),
   );
-  expect(promptRef.current).toBe("/cd ..");
-  expect(draftPrompt()).toBe("/cd ..");
+  expect([promptRef.current, draftPrompt()]).toEqual(["/cd ..", "/cd .."]);
 
   promptRef.current = "hello";
   await act(send);
@@ -159,7 +152,7 @@ it("ignores a second /cd until the first move has reported and cleared the draft
   await using _screen = screen;
   let finish!: (result: unknown) => void;
   mocks.move.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
-  mocks.move.mockResolvedValue(AsyncResult.success(refused));
+  mocks.move.mockResolvedValue(AsyncResult.success({ _tag: "refused", reason: "Busy." }));
   using _toast = vi.spyOn(toastManager, "add").mockImplementationOnce(() => {
     void send();
     return "";

@@ -6,10 +6,7 @@ import { render } from "../../../test/render";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { useComposerMenuItems } from "./useComposerMenuItems";
 
-function SlashMenu(props: {
-  readonly folderMoveAvailable: boolean;
-  readonly labels: RefObject<ReadonlyArray<string> | null>;
-}) {
+function SlashMenu(props: { folderMoveAvailable: boolean; labels: RefObject<string[] | null> }) {
   const { items } = useComposerMenuItems({
     composerTrigger: { kind: "slash-command", query: "", rangeStart: 0, rangeEnd: 1 },
     environmentId: EnvironmentId.make("env-1"),
@@ -40,7 +37,7 @@ it.each([
   [false, ["/model", "/review"]],
   [true, ["/model", "/cd", "/no", "/review"]],
 ])("with folder moves %s, the slash menu offers %j", async (folderMoveAvailable, labels) => {
-  const shown: RefObject<ReadonlyArray<string> | null> = { current: null };
+  const shown: RefObject<string[] | null> = { current: null };
   await using _screen = await render(
     <AppAtomRegistryProvider>
       <SlashMenu folderMoveAvailable={folderMoveAvailable} labels={shown} />

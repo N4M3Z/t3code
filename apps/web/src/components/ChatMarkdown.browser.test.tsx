@@ -381,13 +381,10 @@ describe("ChatMarkdown workspace file opens", () => {
       />,
     );
     const recorded = container.querySelector("a")!;
-    expect(recorded.getAttribute("href")).toBe("/school/old/physics/notes/a.md");
+    const exact = "/school/old/physics/notes/a.md";
+    expect(recorded.getAttribute("href")).toBe(exact);
     await act(async () => recorded.click());
-    expect(openFile).toHaveBeenLastCalledWith(
-      threadRef,
-      "/school/old/physics/notes/a.md",
-      undefined,
-    );
+    expect(openFile).toHaveBeenLastCalledWith(threadRef, exact, undefined);
     using _read = vi.spyOn(projectEnvironment, "readFile").mockImplementation(
       ({ input }) =>
         Atom.make(
@@ -395,7 +392,6 @@ describe("ChatMarkdown workspace file opens", () => {
             new ProjectReadFileError({
               ...input,
               failure: "operation_failed",
-              operation: "realpath-target",
               resolvedPath: input.relativePath,
               cause: { code: "ENOENT" },
             }),
@@ -407,7 +403,7 @@ describe("ChatMarkdown workspace file opens", () => {
         environmentId={threadRef.environmentId}
         cwd="/school/physics"
         projectName="physics"
-        relativePath={openFile.mock.lastCall![1]}
+        relativePath={exact}
         threadRef={threadRef}
         composerDraftTarget={threadRef}
         keybindings={[]}
@@ -428,8 +424,7 @@ describe("ChatMarkdown workspace file opens", () => {
       .toHaveTextContent(
         "The file could not be accessed or read. It may be missing or inaccessible.Attempted path/school/old/physics/notes/a.md",
       );
-    expect(openFile).toHaveBeenCalledTimes(2);
-    expect(workspaceSearch).toHaveBeenCalledOnce();
+    expect([openFile, workspaceSearch].map((spy) => spy.mock.calls.length)).toEqual([2, 1]);
   });
 });
 

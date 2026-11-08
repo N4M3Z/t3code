@@ -1571,12 +1571,11 @@ it("keeps concurrent approvals actionable outside collapsed work and restores se
 });
 
 it("opens a row's relative links under its run's folder", async () => {
-  const providerInstanceId = ProviderInstanceId.make("codex");
   const run = (id: string, folder: object = {}) => ({
     id: RunId.make(id),
     ordinal: 1,
-    providerInstanceId,
-    modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
     ...folder,
   });
   const mention = {
@@ -1592,21 +1591,16 @@ it("opens a row's relative links under its run's folder", async () => {
       id: "plan",
       kind: "proposed-plan",
       createdAt: CREATED_AT,
-      proposedPlan: {
-        id: "plan",
-        runId: null,
-        planMarkdown: "See [plan](plan-notes.txt).",
-        status: "active",
-      },
+      proposedPlan: { id: "plan", runId: null, planMarkdown: "[plan](plan.txt)", status: "active" },
     } as Entry,
     work("move-receipt", {
       itemType: "system_notice",
       label: "Moved.",
-      structuredPayload: { type: "system_notice", previousFolder: "/repo-before" },
+      structuredPayload: { type: "system_notice", previousFolder: "/old" },
     }),
-    message("See [a](src/a.ts).", { runId: RunId.make("run-1") }, "in-run"),
-    message("See [b](src/b.ts).", {}, "runless"),
-    message("See [c](src/c.ts).", { runId: RunId.make("run-paged") }, "paged"),
+    message("See [a](a.ts).", { runId: RunId.make("run-1") }, "in-run"),
+    message("See [b](b.ts).", {}, "runless"),
+    message("See [c](c.ts).", { runId: RunId.make("run-paged") }, "paged"),
     message(
       `Read ${formatComposerContextReference(mention)}`,
       { runId: RunId.make("run-1"), context: { version: 1, records: [mention] } },
@@ -1650,14 +1644,7 @@ it("opens a row's relative links under its run's folder", async () => {
     await click(screen.button("Preview notes.md"));
     return openFile.mock.calls.map((call) => call[1]);
   };
-  const noFolders = [
-    "/repo-before/notes.txt",
-    "/repo-before/plan-notes.txt",
-    "src/a.ts",
-    "src/b.ts",
-    "src/c.ts",
-    "notes.md",
-  ];
+  const noFolders = ["/old/notes.txt", "/old/plan.txt", "a.ts", "b.ts", "c.ts", "notes.md"];
   await vi.waitFor(async () => expect(await opened()).toEqual(noFolders));
 
   await screen.rerender(
@@ -1668,11 +1655,11 @@ it("opens a row's relative links under its run's folder", async () => {
   );
   await vi.waitFor(async () =>
     expect(await opened()).toEqual([
-      "/repo-before/notes.txt",
-      "/repo-before/plan-notes.txt",
-      "/repo-a/app/src/a.ts",
-      "src/b.ts",
-      "/repo-old/src/c.ts",
+      "/old/notes.txt",
+      "/old/plan.txt",
+      "/repo-a/app/a.ts",
+      "b.ts",
+      "/repo-old/c.ts",
       "/repo-a/app/notes.md",
     ]),
   );

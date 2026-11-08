@@ -111,11 +111,8 @@ export async function runThreadMove(
   const result = await move(input);
   if (result._tag === "moved" || result._tag === "refused") return result;
   if (!(await ask(result))) return null;
-  return runThreadMove(
-    result._tag === "needs-project" ? { ...input, addProject: true } : { ...input, confirm: true },
-    move,
-    ask,
-  );
+  const flags = result._tag === "needs-project" ? { addProject: true } : { confirm: true };
+  return runThreadMove({ ...input, ...flags }, move, ask);
 }
 
 /** The line ending in "?" is the dialog's title; the other lines are its description. */

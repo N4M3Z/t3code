@@ -4563,10 +4563,8 @@ describe("shouldCollapseUserMessage", () => {
 });
 
 it("timelineRowFolder takes the run's folder, then the first move receipt after the row", () => {
-  const base = {
-    ...makeStreamingTimelineFixture().visibleTurnItems[0]!,
-    visibility: "inherited" as const,
-  };
+  const [first] = makeStreamingTimelineFixture().visibleTurnItems;
+  const base = { ...first!, visibility: "inherited" as const };
   const item = (id: string, runId: RunId | null, fields: object) =>
     ({ ...base.item, ...fields, id: TurnItemId.make(id), runId }) as OrchestrationV2TurnItem;
   const user = (id: string, runId: RunId | null = null) =>
@@ -4606,13 +4604,14 @@ it("timelineRowFolder takes the run's folder, then the first move receipt after 
     receiptFoldersSignature(entries),
   );
   const folder = (row: object) => timelineRowFolder(row as MessagesTimelineRow, folders);
+  const cwd = (row: object) => folder(row)?.cwd;
   expect(
     [
       { kind: "work", groupedEntries: [{ runId: RunId.make("run-c") }] },
       { kind: "work-live", entry: { runId: RunId.make("run-b") } },
     ].map(folder),
   ).toEqual([{ cwd: "/c", repositoryRoot: "/repo-c" }, { cwd: "/worktree" }]);
-
+  const expected = ["/a", "/a", "/a", "/c", "/source", "/worktree", "/b", undefined];
   for (const toolCallVisibility of ["showAll", "zen"] as const) {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: entries,
@@ -4621,18 +4620,9 @@ it("timelineRowFolder takes the run's folder, then the first move receipt after 
       supportsConversationRollback: false,
       toolCallVisibility,
     });
-    expect(rows.filter((row) => row.kind === "work").map(folder)).toEqual(
-      toolCallVisibility === "showAll" ? [{ cwd: "/b" }, { cwd: "/b" }, undefined] : [],
+    expect(rows.filter((row) => row.kind === "work").map(cwd)).toEqual(
+      toolCallVisibility === "showAll" ? ["/b", "/b", undefined] : [],
     );
-    expect(rows.filter((row) => row.kind !== "work").map(folder)).toEqual([
-      { cwd: "/a" },
-      { cwd: "/a" },
-      { cwd: "/a" },
-      { cwd: "/c", repositoryRoot: "/repo-c" },
-      { cwd: "/source" },
-      { cwd: "/worktree" },
-      { cwd: "/b" },
-      undefined,
-    ]);
+    expect(rows.filter((row) => row.kind !== "work").map(cwd)).toEqual(expected);
   }
 });

@@ -119,10 +119,8 @@ describe("threadHistoryMerge", () => {
       visibleTurnItems: recent.map((entry, position) => ({ ...entry, position })),
     };
     const older = [row(0), row(1), row(2)];
-    const merged = mergeOlderHistoryIntoProjection(projection, older, undefined, [
-      folder("run-1"),
-      folder("run-2", "/stale"),
-    ]);
+    const pageFolders = [folder("run-1"), folder("run-2", "/stale")];
+    const merged = mergeOlderHistoryIntoProjection(projection, older, undefined, pageFolders);
     expect(merged.visibleTurnItems.map((entry) => entry.sourceItemId)).toEqual([
       "item-0",
       "item-1",

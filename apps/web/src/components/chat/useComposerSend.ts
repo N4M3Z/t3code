@@ -556,13 +556,10 @@ export function useComposerSend(input: ComposerSendInput) {
         textOnly: !directAnnotation && !hasContext,
       });
       const notify = (toast: Parameters<typeof stackedThreadToast>[0]) =>
-        toastManager.add(stackedThreadToast(toast));
+        void toastManager.add(stackedThreadToast(toast));
       const refuse = (description: string) =>
         notify({ type: "warning", title: "Thread not moved", description });
-      if (blockReason !== null) {
-        refuse(blockReason);
-        return;
-      }
+      if (blockReason !== null) return refuse(blockReason);
       if (folderMove.command === "cd" && folderMove.path === null) {
         const folder =
           activeThread.worktreePath ?? activeProject?.workspaceRoot ?? "an unknown folder";

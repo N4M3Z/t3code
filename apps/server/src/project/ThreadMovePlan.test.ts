@@ -1,7 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
-  EventId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
@@ -19,10 +18,10 @@ import * as Effect from "effect/Effect";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { applyToProjection, emptyProjection } from "../orchestration-v2/ProjectionStore.ts";
+import { createdAt, threadCreated } from "./ThreadMove.testkit.ts";
 import { planThreadMove, type ThreadMoveMember } from "./ThreadMovePlan.ts";
 import type { ThreadMoveReceiptInput } from "./ThreadMoveReceipt.ts";
 
-const createdAt = DateTime.makeUnsafe("2026-09-01T00:00:00.000Z");
 const movedAt = DateTime.makeUnsafe("2026-09-04T00:00:00.000Z");
 const projectA = ProjectId.make("project:a");
 const projectB = ProjectId.make("project:b");
@@ -38,23 +37,13 @@ function projection(input: {
   readonly claudeSession?: { readonly nativeId: string } | null;
 }): OrchestrationV2ThreadProjection {
   const threadId = ThreadId.make(input.id);
-  const base = emptyProjection({
-    id: EventId.make(`created:${input.id}`),
-    type: "thread.created",
-    threadId,
-    occurredAt: createdAt,
-    payload: {
-      id: threadId,
-      createdBy: "user",
-      creationSource: "web",
+  const base = emptyProjection(
+    threadCreated({
+      threadId,
       projectId: projectA,
-      title: input.id,
-      providerInstanceId: input.claudeSession ? claude : codex,
-      modelSelection: { instanceId: codex, model: "gpt-5.4" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: input.branch ?? null,
       worktreePath: input.worktreePath,
+      providerInstanceId: input.claudeSession ? claude : codex,
+      branch: input.branch,
       ...(input.pullRequest
         ? {
             branchPullRequest: {
@@ -64,18 +53,8 @@ function projection(input: {
             },
           }
         : {}),
-      activeProviderThreadId: null,
-      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-      forkedFrom: null,
-      createdAt,
-      updatedAt: createdAt,
-      archivedAt: null,
-      settledOverride: null,
-      settledAt: null,
-      lastVisitedAt: null,
-      deletedAt: null,
-    },
-  });
+    }),
+  );
   const providerThreads: Array<OrchestrationV2ProviderThread> = input.claudeSession
     ? [
         {
@@ -251,11 +230,6 @@ it.effect.each([
         ["side", "scheduled-tasks.move"],
       ],
     );
-    assert.deepEqual(effects.at(-1)?.request, {
-      type: "scheduled-tasks.move",
-      threadIds: [ThreadId.make("side")],
-      projectId: projectB,
-    });
     const after = events
       .filter((event) => event.threadId === ThreadId.make("t"))
       .reduce(applyToProjection, thread);

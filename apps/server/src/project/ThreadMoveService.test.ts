@@ -7,7 +7,6 @@ import {
   EventId,
   MessageId,
   NodeId,
-  type OrchestrationV2AppThread,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -21,8 +20,8 @@ import {
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -54,6 +53,7 @@ import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectLock from "./ProjectLock.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import { createdAt, threadCreated } from "./ThreadMove.testkit.ts";
 import * as ThreadMoveService from "./ThreadMoveService.ts";
 
 const codexId = ProviderInstanceId.make("codex");
@@ -179,62 +179,13 @@ const layerTest = Layer.effect(ThreadMoveService.ThreadMoveService, ThreadMoveSe
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
-const createdAt = DateTime.makeUnsafe("2026-01-01T00:00:00.000Z");
-
-function threadCreated(input: {
-  readonly threadId: ThreadId;
-  readonly projectId: ProjectId;
-  readonly worktreePath: string | null;
-  readonly parent?: ThreadId;
-  readonly relationship?: "fork" | "subagent";
-  readonly sideChat?: boolean;
-  readonly branch?: string;
-}) {
-  const { threadId } = input;
-  const payload: OrchestrationV2AppThread = {
-    createdBy: "user",
-    creationSource: "web",
-    id: threadId,
-    projectId: input.projectId,
-    title: threadId,
-    providerInstanceId: codexId,
-    modelSelection: { instanceId: codexId, model: "gpt-5" },
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    branch: input.branch ?? null,
-    worktreePath: input.worktreePath,
-    activeProviderThreadId: null,
-    lineage: {
-      parentThreadId: input.parent ?? null,
-      relationshipToParent: input.relationship ?? null,
-      rootThreadId: input.parent ?? threadId,
-      ...(input.sideChat === true ? { sideChat: true } : {}),
-    },
-    forkedFrom: null,
-    createdAt,
-    updatedAt: createdAt,
-    archivedAt: null,
-    settledOverride: null,
-    settledAt: null,
-    lastVisitedAt: null,
-    deletedAt: null,
-  };
-  return {
-    id: EventId.make(`created:${threadId}`),
-    type: "thread.created" as const,
-    threadId,
-    providerInstanceId: codexId,
-    occurredAt: createdAt,
-    payload,
-  };
-}
-
 const setup = Effect.fn("ThreadMoveServiceTest.setup")(function* (name: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const projects = yield* ProjectService.ProjectService;
   const eventSink = yield* EventSink.EventSinkV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const service = yield* ThreadMoveService.ThreadMoveService;
   const root = yield* fileSystem.realPath(
     yield* fileSystem.makeTempDirectoryScoped({ prefix: `t3-move-${name}-` }),
   );
@@ -262,7 +213,7 @@ const setup = Effect.fn("ThreadMoveServiceTest.setup")(function* (name: string) 
   };
   const shellOf = (threadId: ThreadId) =>
     projections.getThreadProjection(threadId).pipe(Effect.map(({ thread }) => thread));
-  return { at, a, b, thread, shellOf };
+  return { at, a, b, thread, shellOf, service };
 });
 
 const outboxOf = (threadId: ThreadId) =>
@@ -275,13 +226,27 @@ const outboxOf = (threadId: ThreadId) =>
     ),
     Effect.map((rows) => rows.map((row) => row.effect_type)),
   );
+const hookLock = <Key>(
+  locks: KeyedLock.KeyedLock<Key>,
+  before: (key: Key) => Effect.Effect<unknown>,
+): KeyedLock.KeyedLock<Key> => ({
+  ...locks,
+  withLock: (key, effect) => before(key).pipe(Effect.andThen(locks.withLock(key, effect))),
+});
+const hookedService = Effect.fn("ThreadMoveServiceTest.hookedService")(function* (
+  before: (key: ProjectId) => Effect.Effect<unknown>,
+) {
+  const locks = yield* ProjectLock.ProjectLock;
+  return yield* ThreadMoveService.make.pipe(
+    Effect.provideService(ProjectLock.ProjectLock, hookLock(locks, before)),
+  );
+});
 
 it.layer(layerTest)("ThreadMoveService", (it) => {
   it.effect("a refused move or a failed environment read commits nothing", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { at, a, thread, shellOf } = yield* setup("refused");
-        const service = yield* ThreadMoveService.ThreadMoveService;
+        const { at, a, thread, shellOf, service } = yield* setup("refused");
         const probe = yield* Probe;
         const threadId = yield* thread("t", a.id, null);
         yield* Ref.set(probe, (candidate) => Effect.succeed(candidate === threadId));
@@ -328,20 +293,12 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
   it.effect("only the call that carries every flag changes state", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { at, a, thread, shellOf } = yield* setup("flags");
-        const service = yield* ThreadMoveService.ThreadMoveService;
+        const { at, a, thread, shellOf, service } = yield* setup("flags");
         const projects = yield* ProjectService.ProjectService;
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         const threadId = yield* thread("t", a.id, at("w"), { branch: "feature" });
-        const sideId = yield* thread("side", a.id, at("w"), {
-          parent: threadId,
-          relationship: "fork",
-          sideChat: true,
-        });
-        const forkId = yield* thread("fork", a.id, at("w"), {
-          parent: threadId,
-          relationship: "fork",
-        });
+        const sideId = yield* thread("side", a.id, at("w"), { parent: threadId, kind: "side" });
+        const forkId = yield* thread("fork", a.id, at("w"), { parent: threadId, kind: "fork" });
         const noProject = () =>
           projects.getByWorkspaceRoot(at("plain")).pipe(Effect.map(Option.isNone));
 
@@ -403,12 +360,10 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
   it.effect("keeps and names the project it added when the re-check refuses", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { at, a, thread, shellOf } = yield* setup("recheck");
-        const service = yield* ThreadMoveService.ThreadMoveService;
+        const { at, a, thread, shellOf, service } = yield* setup("recheck");
         const projects = yield* ProjectService.ProjectService;
         const probe = yield* Probe;
         const threadId = yield* thread("t", a.id, null);
-        // The first check passes; the one under the locks, after the project was added, refuses.
         const probes = yield* Ref.make(0);
         yield* Ref.set(probe, () =>
           Ref.updateAndGet(probes, (count) => count + 1).pipe(Effect.map((count) => count > 1)),
@@ -430,23 +385,15 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         assert.equal((yield* shellOf(threadId)).projectId, a.id);
         yield* Ref.set(probe, () => Effect.succeed(false));
 
-        // The thread enters a worktree after the project is added, so the re-check would ask.
         const eventSink = yield* EventSink.EventSinkV2;
-        const projectLocks = yield* ProjectLock.ProjectLock;
         yield* (yield* FileSystem.FileSystem).makeDirectory(at("other"));
         const entersWorktree = {
           ...threadCreated({ threadId, projectId: a.id, worktreePath: at("w") }),
           id: EventId.make("recheck:enters-worktree"),
           type: "thread.metadata-updated" as const,
         };
-        const racing = yield* ThreadMoveService.make.pipe(
-          Effect.provideService(ProjectLock.ProjectLock, {
-            ...projectLocks,
-            withLock: (key, effect) =>
-              eventSink
-                .write({ events: [entersWorktree] })
-                .pipe(Effect.orDie, Effect.andThen(projectLocks.withLock(key, effect))),
-          }),
+        const racing = yield* hookedService(() =>
+          eventSink.write({ events: [entersWorktree] }).pipe(Effect.orDie),
         );
         const asked = yield* racing.move({ threadId, destination: at("other"), addProject: true });
         const other = Option.getOrUndefined(yield* projects.getByWorkspaceRoot(at("other")));
@@ -457,20 +404,15 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         });
         assert.equal((yield* shellOf(threadId)).projectId, a.id);
 
-        // The added project is deleted before the move takes its lock.
         yield* (yield* FileSystem.FileSystem).makeDirectory(at("gone"));
-        const deleting = yield* ThreadMoveService.make.pipe(
-          Effect.provideService(ProjectLock.ProjectLock, {
-            ...projectLocks,
-            withLock: (key, effect) =>
-              projects
-                .delete({
-                  commandId: CommandId.make(`recheck:delete:${key}`),
-                  projectId: key,
-                  force: true,
-                })
-                .pipe(Effect.orDie, Effect.andThen(projectLocks.withLock(key, effect))),
-          }),
+        const deleting = yield* hookedService((key) =>
+          projects
+            .delete({
+              commandId: CommandId.make(`recheck:delete:${key}`),
+              projectId: key,
+              force: true,
+            })
+            .pipe(Effect.orDie),
         );
         const gone = yield* deleting.move({
           threadId,
@@ -498,9 +440,7 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         Effect.gen(function* () {
           const { at, a, b, thread, shellOf } = yield* setup("deletion");
           const projections = yield* ProjectionStore.ProjectionStoreV2;
-          const projectLocks = yield* ProjectLock.ProjectLock;
           const threadId = yield* thread("t", a.id, null);
-          // Hold the deletion between its read of the project's threads and its commit.
           const deleteReadThreads = yield* Deferred.make<void>();
           const releaseDelete = yield* Deferred.make<void>();
           const gatedProjects = yield* ProjectService.make.pipe(
@@ -523,17 +463,8 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
             })
             .pipe(Effect.forkChild({ startImmediately: true }));
           yield* Deferred.await(deleteReadThreads);
-          // Release the deletion once the move reaches the project lock.
           const moveAtLock = yield* Deferred.make<void>();
-          const service = yield* ThreadMoveService.make.pipe(
-            Effect.provideService(ProjectLock.ProjectLock, {
-              ...projectLocks,
-              withLock: (key, effect) =>
-                Deferred.succeed(moveAtLock, undefined).pipe(
-                  Effect.andThen(projectLocks.withLock(key, effect)),
-                ),
-            }),
-          );
+          const service = yield* hookedService(() => Deferred.succeed(moveAtLock, undefined));
           const releaser = yield* Deferred.await(moveAtLock).pipe(
             Effect.andThen(Deferred.succeed(releaseDelete, undefined)),
             Effect.forkChild({ startImmediately: true }),
@@ -581,13 +512,10 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         const projectLocks = yield* ProjectLock.ProjectLock;
         const deletionAtLock = yield* Deferred.make<void>();
         const projects = yield* ProjectService.make.pipe(
-          Effect.provideService(ProjectLock.ProjectLock, {
-            ...projectLocks,
-            withLock: (key, effect) =>
-              Deferred.succeed(deletionAtLock, undefined).pipe(
-                Effect.andThen(projectLocks.withLock(key, effect)),
-              ),
-          }),
+          Effect.provideService(
+            ProjectLock.ProjectLock,
+            hookLock(projectLocks, () => Deferred.succeed(deletionAtLock, undefined)),
+          ),
         );
         const held = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
@@ -602,7 +530,6 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
           .delete({ commandId: CommandId.make("lock:delete-b"), projectId: b.id })
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(deletionAtLock);
-        // A thread that arrives while the lock is held is what the deletion's read must see.
         yield* thread("late", b.id, null);
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(holder);
@@ -615,11 +542,10 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
   it.effect("/no claims one folder and removes it only while empty when the commit fails", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { a, thread, shellOf } = yield* setup("scratch");
+        const { a, thread, shellOf, service } = yield* setup("scratch");
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const eventSink = yield* EventSink.EventSinkV2;
-        const service = yield* ThreadMoveService.ThreadMoveService;
         const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
         const scratchRoot = Option.getOrThrow(yield* managedFolders.scratchRoot);
         const claimed = () => fileSystem.readDirectory(scratchRoot);
@@ -690,39 +616,24 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
         const order = yield* Ref.make<ReadonlyArray<string>>([]);
         const record = (key: string) => Ref.update(order, (keys) => [...keys, key]);
         const threadId = yield* thread("t", a.id, null);
-        const sideId = yield* thread("side", a.id, null, {
-          parent: threadId,
-          relationship: "fork",
-          sideChat: true,
-        });
-        const subId = yield* thread("sub", a.id, null, {
-          parent: sideId,
-          relationship: "subagent",
-        });
-        const forkId = yield* thread("fork", a.id, null, {
-          parent: threadId,
-          relationship: "fork",
-        });
-        const lateSide = thread("late", a.id, null, {
-          parent: threadId,
-          relationship: "fork",
-          sideChat: true,
-        });
+        const sideId = yield* thread("side", a.id, null, { parent: threadId, kind: "side" });
+        const subId = yield* thread("sub", a.id, null, { parent: sideId, kind: "subagent" });
+        const forkId = yield* thread("fork", a.id, null, { parent: threadId, kind: "fork" });
+        const lateSide = thread("late", a.id, null, { parent: threadId, kind: "side" }).pipe(
+          Effect.orDie,
+        );
         const lateId = ThreadId.make("order:late");
         const service = yield* ThreadMoveService.make.pipe(
-          Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, {
-            ...threadLocks,
-            withLock: (key, effect) =>
-              record(key).pipe(Effect.andThen(threadLocks.withLock(key, effect))),
-          }),
-          Effect.provideService(ProjectLock.ProjectLock, {
-            ...projectLocks,
-            withLock: (key, effect) =>
-              record(`project:${key}`).pipe(
-                Effect.andThen(lateSide),
-                Effect.andThen(projectLocks.withLock(key, effect)),
-              ),
-          }),
+          Effect.provideService(
+            ThreadCommandExecutor.ThreadCommandExecutor,
+            hookLock(threadLocks, record),
+          ),
+          Effect.provideService(
+            ProjectLock.ProjectLock,
+            hookLock(projectLocks, (key) =>
+              record(`project:${key}`).pipe(Effect.andThen(lateSide)),
+            ),
+          ),
         );
 
         const result = yield* service.move({ threadId, destination: at("b") });
@@ -746,16 +657,11 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
   it.effect("queues each member's task move behind that member's detach", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { at, a, b, thread } = yield* setup("queue");
-        const service = yield* ThreadMoveService.ThreadMoveService;
+        const { at, a, b, thread, service } = yield* setup("queue");
         const eventSink = yield* EventSink.EventSinkV2;
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const threadId = yield* thread("t", a.id, null);
-        const sideId = yield* thread("side", a.id, null, {
-          parent: threadId,
-          relationship: "fork",
-          sideChat: true,
-        });
+        const sideId = yield* thread("side", a.id, null, { parent: threadId, kind: "side" });
         const driver = ProviderDriverKind.make("codex");
         yield* eventSink.write({
           events: [
@@ -808,8 +714,7 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
   it.effect("relocates each Claude row from where its session is stored, one move at a time", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { at, a, b, thread, shellOf } = yield* setup("storage");
-        const service = yield* ThreadMoveService.ThreadMoveService;
+        const { at, a, b, thread, shellOf, service } = yield* setup("storage");
         const eventSink = yield* EventSink.EventSinkV2;
         const sql = yield* SqlClient.SqlClient;
         const threadId = yield* thread("t", a.id, null);

@@ -56,7 +56,6 @@ type Refused = Extract<ThreadMoveResult, { _tag: "refused" }>;
 
 const refused = (reason: string): Refused => ({ _tag: "refused", reason });
 const destinationGone = refused("The destination project no longer exists.");
-const quote = (title: string) => `"${title}"`;
 
 export const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
@@ -111,22 +110,18 @@ export const make = Effect.gen(function* () {
       rawProviderInstanceId: instanceId,
       env: hostEnvironment as Record<string, string>,
     }).pipe(Effect.mapError(fail("Could not resolve the provider's environment.")));
-    const snapshot = yield* instance.snapshot.getSnapshot;
     return {
       driver: instance.driverKind,
       capabilities: yield* instance.orchestrationAdapter
         .getCapabilities()
         .pipe(Effect.mapError(fail("Could not read the provider's capabilities."))),
-      version: snapshot.version ?? null,
+      version: (yield* instance.snapshot.getSnapshot).version ?? null,
       environment,
     } satisfies ThreadMoveProviderInstance;
   });
 
   const readShells = threads.getShellSnapshot().pipe(
-    Effect.map((snapshot): ReadonlyArray<ThreadMoveShell> => [
-      ...snapshot.threads,
-      ...snapshot.archivedThreads,
-    ]),
+    Effect.map((snapshot) => [...snapshot.threads, ...snapshot.archivedThreads]),
     Effect.mapError(fail("Could not read the threads.")),
   );
 
@@ -138,12 +133,11 @@ export const make = Effect.gen(function* () {
     const settings = yield* serverSettings.getSettings.pipe(
       Effect.mapError(fail("Could not read the settings.")),
     );
-    const instances = new Map<ProviderInstanceId, ThreadMoveProviderInstance>();
     const members = collectMoveSet(request.threadId, shells);
-    for (const member of members) {
-      if (instances.has(member.providerInstanceId)) continue;
-      const instance = yield* providerInstance(member.providerInstanceId);
-      if (instance !== undefined) instances.set(member.providerInstanceId, instance);
+    const instances = new Map<ProviderInstanceId, ThreadMoveProviderInstance>();
+    for (const id of new Set(members.map((member) => member.providerInstanceId))) {
+      const instance = yield* providerInstance(id);
+      if (instance !== undefined) instances.set(id, instance);
     }
     const decision = yield* decideThreadMove(
       {
@@ -191,7 +185,6 @@ export const make = Effect.gen(function* () {
           workspaceRoot: folder,
         })
         .pipe(
-          // Another caller added the folder first; the move goes into that project.
           Effect.catchTags({
             ProjectConflictError: (conflict) =>
               projects
@@ -210,14 +203,12 @@ export const make = Effect.gen(function* () {
   ): Effect.Effect<ThreadMoveResult, ThreadMoveError> =>
     threadLocks.withLock(
       threadId,
-      readShells.pipe(
-        Effect.flatMap((shells) => {
-          locked.push(threadId);
-          return collectMoveSet(threadId, shells)
-            .filter((child) => child.lineage.parentThreadId === threadId)
-            .reduceRight((inner, child) => lockMembers(child.id, locked, inner), body);
-        }),
-      ),
+      Effect.flatMap(readShells, (shells) => {
+        locked.push(threadId);
+        return collectMoveSet(threadId, shells)
+          .filter((child) => child.lineage.parentThreadId === threadId)
+          .reduceRight((inner, child) => lockMembers(child.id, locked, inner), body);
+      }),
     );
 
   const apply = Effect.fn("ThreadMoveService.apply")(function* (
@@ -231,9 +222,8 @@ export const make = Effect.gen(function* () {
         .pipe(Effect.mapError(fail("Could not read the destination project."))),
     );
     if (project === undefined) return destinationGone;
-    if (project.archivedAt != null) {
-      return refused(`The destination project ${quote(project.title)} is archived.`);
-    }
+    if (project.archivedAt != null)
+      return refused(`The destination project "${project.title}" is archived.`);
     const { projects: projectList, decision } = yield* decide(input);
     if (decision._tag !== "move") return decision;
     const target = decision.destination;
@@ -265,7 +255,7 @@ export const make = Effect.gen(function* () {
     const commit = Effect.gen(function* () {
       const members: Array<ThreadMoveMember> = [];
       for (const member of decision.members) {
-        const unreadable = fail(`Could not read ${quote(member.title)}.`);
+        const unreadable = fail(`Could not read "${member.title}".`);
         const projection = yield* threads
           .getThreadRecords(
             member.id,
@@ -370,7 +360,7 @@ export const make = Effect.gen(function* () {
       const stays = result === destinationGone ? "" : " and stays";
       return {
         ...refusal,
-        reason: `${refusal.reason} The project ${quote(added.title)} was added${stays}.`,
+        reason: `${refusal.reason} The project "${added.title}" was added${stays}.`,
         projects: [...(refusal.projects ?? []), { projectId: added.id, title: added.title }],
       };
     },

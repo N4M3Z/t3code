@@ -64,6 +64,13 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
   for (const [index, member] of input.members.entries()) {
     const { thread, providerSessions, providerThreads } = member.projection;
     const threadId = thread.id;
+    const effect = (suffix: string, request: PendingOrchestrationEffectV2["request"]) =>
+      effects.push({
+        id: `effect:${command.commandId}:${request.type}:${suffix}`,
+        commandId: command.commandId,
+        threadId,
+        request,
+      });
     const moved = {
       ...thread,
       projectId: command.projectId,
@@ -79,38 +86,35 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
       occurredAt: now,
       payload: moved,
     });
-    const tracked = thread.branch === null ? null : (thread.branchPullRequest ?? null);
-    const key = tracked === null ? null : legacyThreadPullRequestKey(tracked);
-    const links = threadPullRequestsOf(moved);
-    const existing =
-      key === null ? undefined : links.find((link) => threadPullRequestKeysEqual(link, key));
-    if (
-      tracked !== null &&
-      key !== null &&
-      (existing === undefined || existing.source === "stack-dismissed")
-    ) {
-      yield* emit({
-        type: "thread.pull-request-synced",
-        threadId,
-        providerInstanceId: thread.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          ...moved,
-          pullRequests: [
-            ...links.filter((link) => link !== existing),
-            existing === undefined
-              ? {
-                  ...key,
-                  url: tracked.url,
-                  source: "manual",
-                  linkedAt: DateTime.formatIso(now),
-                  snapshot: null,
-                  stack: null,
-                }
-              : { ...existing, source: "manual" },
-          ],
-        },
-      });
+    const tracked = thread.branch === null ? null : thread.branchPullRequest;
+    if (tracked != null) {
+      const key = legacyThreadPullRequestKey(tracked);
+      const links = threadPullRequestsOf(moved);
+      const existing = links.find((link) => threadPullRequestKeysEqual(link, key));
+      if (existing === undefined || existing.source === "stack-dismissed") {
+        yield* emit({
+          type: "thread.pull-request-synced",
+          threadId,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...moved,
+            pullRequests: [
+              ...links.filter((link) => link !== existing),
+              existing === undefined
+                ? {
+                    ...key,
+                    url: tracked.url,
+                    source: "manual",
+                    linkedAt: DateTime.formatIso(now),
+                    snapshot: null,
+                    stack: null,
+                  }
+                : { ...existing, source: "manual" },
+            ],
+          },
+        });
+      }
     }
     if (input.folderChanged) {
       for (const session of providerSessions) {
@@ -123,33 +127,23 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
           occurredAt: now,
           payload: { providerSessionId: session.id, detachedAt: now, reason: DETACH_REASON },
         });
-        effects.push({
-          id: `effect:${command.commandId}:provider-session.detach:${session.id}`,
-          commandId: command.commandId,
-          threadId,
-          request: {
-            type: "provider-session.detach",
-            providerSessionId: session.id,
-            detail: DETACH_REASON,
-          },
+        effect(session.id, {
+          type: "provider-session.detach",
+          providerSessionId: session.id,
+          detail: DETACH_REASON,
         });
       }
       for (const providerThread of providerThreads) {
         const nativeSessionId = providerThread.nativeThreadRef?.nativeId;
         if (providerThread.driver !== "claudeAgent" || nativeSessionId == null) continue;
-        effects.push({
-          id: `effect:${command.commandId}:provider-session.relocate-storage:${providerThread.id}`,
-          commandId: command.commandId,
-          threadId,
-          request: {
-            type: "provider-session.relocate-storage",
-            driver: providerThread.driver,
-            providerInstanceId: providerThread.providerInstanceId,
-            providerThreadId: providerThread.id,
-            nativeSessionId,
-            oldFolder: member.storageFolders.get(providerThread.id) ?? member.previousFolder,
-            newFolder: input.folder,
-          },
+        effect(providerThread.id, {
+          type: "provider-session.relocate-storage",
+          driver: providerThread.driver,
+          providerInstanceId: providerThread.providerInstanceId,
+          providerThreadId: providerThread.id,
+          nativeSessionId,
+          oldFolder: member.storageFolders.get(providerThread.id) ?? member.previousFolder,
+          newFolder: input.folder,
         });
       }
     }
@@ -169,15 +163,10 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
             : memberMoveNoticeMessage({ threadTitle, folder: input.folder }),
       }),
     });
-    effects.push({
-      id: `effect:${command.commandId}:scheduled-tasks.move:${threadId}`,
-      commandId: command.commandId,
-      threadId,
-      request: {
-        type: "scheduled-tasks.move",
-        threadIds: [threadId],
-        projectId: command.projectId,
-      },
+    effect(threadId, {
+      type: "scheduled-tasks.move",
+      threadIds: [threadId],
+      projectId: command.projectId,
     });
   }
   return { events, effects };

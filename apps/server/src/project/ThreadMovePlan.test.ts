@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import {
   CommandId,
   type OrchestrationV2DomainEvent,
@@ -42,7 +42,7 @@ function projection(input: {
         providerInstanceId: input.claudeSession === undefined ? codex : claude,
         branch: input.branch,
         branchPullRequest: input.pullRequest
-          ? { projectId: projectA, repository: "t3tools/t3code", ...input.pullRequest }
+          ? { projectId: projectA, repository: "o/r", ...input.pullRequest }
           : undefined,
       }),
     ),
@@ -115,20 +115,14 @@ const noticeOf = (event: EventOf<"turn-item.updated">) =>
 
 const member = (
   thread: OrchestrationV2ThreadProjection,
-  previousFolder: string,
+  previousFolder = "/work/a",
   nextOrdinal = 7,
   storageFolders: ReadonlyMap<ProviderThreadId, string> = new Map(),
 ): ThreadMoveMember => ({ projection: thread, previousFolder, storageFolders, nextOrdinal });
 
 it.effect.each([
   { name: "root to root", worktreePath: null, from: "/work/a", to: "/work/b", scratch: null },
-  {
-    name: "worktree to root",
-    worktreePath: "/work/wt",
-    from: "/work/wt",
-    to: "/work/b",
-    scratch: null,
-  },
+  { name: "worktree to root", worktreePath: "/wt", from: "/wt", to: "/work/b", scratch: null },
   { name: "/no", worktreePath: null, from: "/work/a", to: "/scratch/new", scratch: "/scratch/new" },
 ])("moves a thread and its member from $name in one batch", ({ worktreePath, from, to, scratch }) =>
   Effect.gen(function* () {
@@ -139,98 +133,62 @@ it.effect.each([
       worktreePath: scratch,
       folder: to,
     });
-    assert.deepEqual(
-      ofType(events, "thread.metadata-updated").map((event) => [
-        event.payload.id,
-        event.payload.projectId,
-        event.payload.worktreePath,
-        event.payload.branch,
-      ]),
-      [
-        ["t", projectB, scratch, null],
-        ["side", projectB, scratch, null],
-      ],
-    );
-    assert.deepEqual(
-      ofType(events, "provider-session.detached").map((event) => [
-        event.threadId,
-        event.payload.reason,
-      ]),
-      [
-        ["t", "Workspace changed."],
-        ["side", "Workspace changed."],
-      ],
-    );
+    expect(ofType(events, "thread.metadata-updated")).toMatchObject([
+      { payload: { id: "t", projectId: projectB, worktreePath: scratch, branch: null } },
+      { payload: { id: "side", projectId: projectB, worktreePath: scratch, branch: null } },
+    ]);
+    expect(ofType(events, "provider-session.detached")).toMatchObject([
+      { threadId: "t", payload: { reason: "Workspace changed." } },
+      { threadId: "side", payload: { reason: "Workspace changed." } },
+    ]);
     const notices = ofType(events, "turn-item.updated").map(noticeOf);
-    assert.deepEqual(
-      notices.map((item) => [item.threadId, item.ordinal, item.runId, item.previousFolder]),
-      [
-        ["t", 7, null, from],
-        ["side", 3, null, from],
-      ],
-    );
+    expect(notices).toMatchObject([
+      { threadId: "t", ordinal: 7, runId: null, previousFolder: from },
+      { threadId: "side", ordinal: 3, runId: null, previousFolder: from },
+    ]);
     assert.isTrue(notices.every((item) => item.startedAt === movedAt));
     assert.include(notices[0]?.message ?? "", `The next turn runs in ${receipt.folder}.`);
     assert.equal(
       notices[1]?.message,
       `Moved with t. The next turn runs in ${to}. The receipt in t lists the details.`,
     );
-    assert.deepEqual(
-      effects.map((effect) => [effect.threadId, effect.request.type]),
-      [
-        ["t", "provider-session.detach"],
-        ["t", "scheduled-tasks.move"],
-        ["side", "provider-session.detach"],
-        ["side", "scheduled-tasks.move"],
-      ],
-    );
+    expect(effects).toMatchObject([
+      { threadId: "t", request: { type: "provider-session.detach" } },
+      { threadId: "t", request: { type: "scheduled-tasks.move" } },
+      { threadId: "side", request: { type: "provider-session.detach" } },
+      { threadId: "side", request: { type: "scheduled-tasks.move" } },
+    ]);
     const after = events
       .filter((event) => event.threadId === ThreadId.make("t"))
       .reduce(applyToProjection, thread);
     assert.equal(after.thread.projectId, projectB);
-    assert.deepEqual(
-      after.providerSessions.map((session) => session.status),
-      ["stopped"],
-    );
+    expect(after.providerSessions.map((session) => session.status)).toEqual(["stopped"]);
   }).pipe(Effect.provide(IdAllocator.layer)),
 );
 
 it.effect("detaches nothing when the folder does not change", () =>
   Effect.gen(function* () {
     const thread = projection({ id: "t", worktreePath: null, sessions: ["running"] });
-    const { events, effects } = yield* plan({
-      members: [member(thread, "/work/a")],
-      folderChanged: false,
-    });
-    assert.deepEqual(
-      events.map((event) => event.type),
-      ["thread.metadata-updated", "turn-item.updated"],
-    );
-    assert.deepEqual(
-      effects.map((effect) => effect.request.type),
-      ["scheduled-tasks.move"],
-    );
+    const { events, effects } = yield* plan({ members: [member(thread)], folderChanged: false });
+    expect(events).toMatchObject([
+      { type: "thread.metadata-updated" },
+      { type: "turn-item.updated" },
+    ]);
+    expect(effects.map(({ request }) => request.type)).toEqual(["scheduled-tasks.move"]);
   }).pipe(Effect.provide(IdAllocator.layer)),
 );
 
 it.effect("links the pull request a cleared branch tracked, once", () =>
   Effect.gen(function* () {
-    const pullRequest = { number: 42, url: "https://github.com/t3tools/t3code/pull/42" };
+    const pullRequest = { number: 42, url: "https://github.com/o/r/pull/42" };
     const thread = projection({ id: "t", worktreePath: null, branch: "feature", pullRequest });
-    const { events } = yield* plan({ members: [member(thread, "/work/a")] });
+    const { events } = yield* plan({ members: [member(thread)] });
     const [synced] = ofType(events, "thread.pull-request-synced");
-    assert.deepEqual(
-      synced?.payload.pullRequests?.map((link) => [
-        link.host,
-        link.repository,
-        link.number,
-        link.url,
-        link.source,
-      ]),
-      [["github.com", "t3tools/t3code", 42, pullRequest.url, "manual"]],
-    );
-    assert.isNull(synced?.payload.branch);
-    assert.isNull(synced?.payload.branchPullRequest);
+    expect(synced?.payload).toMatchObject({
+      branch: null,
+      branchPullRequest: null,
+      pullRequests: [{ ...pullRequest, host: "github.com", repository: "o/r", source: "manual" }],
+    });
     const after = events.reduce(applyToProjection, thread);
     assert.lengthOf(after.thread.pullRequests ?? [], 1);
 
@@ -238,26 +196,22 @@ it.effect("links the pull request a cleared branch tracked, once", () =>
       ...thread,
       thread: { ...thread.thread, pullRequests },
     });
-    const again = yield* plan({
-      members: [member(withLinks(after.thread.pullRequests), "/work/a")],
-    });
+    const again = yield* plan({ members: [member(withLinks(after.thread.pullRequests))] });
     assert.lengthOf(ofType(again.events, "thread.pull-request-synced"), 0);
+    const dismissedAt = "2026-08-01T00:00:00.000Z";
     const dismissed = withLinks(
       after.thread.pullRequests?.map((link) => ({
         ...link,
         source: "stack-dismissed" as const,
-        linkedAt: "2026-08-01T00:00:00.000Z",
+        linkedAt: dismissedAt,
       })),
     );
-    const relinked = yield* plan({ members: [member(dismissed, "/work/a")] });
-    assert.deepEqual(
-      ofType(relinked.events, "thread.pull-request-synced").flatMap((event) =>
-        (event.payload.pullRequests ?? []).map((link) => [link.number, link.source, link.linkedAt]),
-      ),
-      [[42, "manual", "2026-08-01T00:00:00.000Z"]],
-    );
+    const relinked = yield* plan({ members: [member(dismissed)] });
+    expect(ofType(relinked.events, "thread.pull-request-synced")).toMatchObject([
+      { payload: { pullRequests: [{ number: 42, source: "manual", linkedAt: dismissedAt }] } },
+    ]);
     const unbranched = projection({ id: "t", worktreePath: null, branch: null, pullRequest });
-    const none = yield* plan({ members: [member(unbranched, "/work/a")] });
+    const none = yield* plan({ members: [member(unbranched)] });
     assert.lengthOf(ofType(none.events, "thread.pull-request-synced"), 0);
   }).pipe(Effect.provide(IdAllocator.layer)),
 );
@@ -278,33 +232,25 @@ it.effect("relocates each Claude member's native session after its detach", () =
           thread,
           "/work/a",
           7,
-          new Map([[ProviderThreadId.make("provider-thread:t"), "/work/old-storage"]]),
+          new Map([[ProviderThreadId.make("provider-thread:t"), "/old"]]),
         ),
-        member(side, "/work/a"),
-        member(codexOnly, "/work/a"),
+        member(side),
+        member(codexOnly),
       ],
     });
-    assert.deepEqual(
-      effects.map((effect) => [effect.threadId, effect.request.type]),
-      [
-        ["t", "provider-session.detach"],
-        ["t", "provider-session.relocate-storage"],
-        ["t", "scheduled-tasks.move"],
-        ["side", "provider-session.relocate-storage"],
-        ["side", "scheduled-tasks.move"],
-        ["codex", "scheduled-tasks.move"],
-      ],
-    );
-    assert.deepEqual(
-      effects.flatMap((effect) =>
-        effect.request.type === "provider-session.relocate-storage"
-          ? [[effect.request.nativeSessionId, effect.request.oldFolder, effect.request.newFolder]]
-          : [],
-      ),
-      [
-        ["sess-1", "/work/old-storage", "/work/b"],
-        ["sess-2", "/work/a", "/work/b"],
-      ],
-    );
+    expect(effects).toMatchObject([
+      { threadId: "t", request: { type: "provider-session.detach" } },
+      { threadId: "t", request: { type: "provider-session.relocate-storage" } },
+      { threadId: "t", request: { type: "scheduled-tasks.move" } },
+      { threadId: "side", request: { type: "provider-session.relocate-storage" } },
+      { threadId: "side", request: { type: "scheduled-tasks.move" } },
+      { threadId: "codex", request: { type: "scheduled-tasks.move" } },
+    ]);
+    expect(
+      effects.filter(({ request }) => request.type === "provider-session.relocate-storage"),
+    ).toMatchObject([
+      { request: { nativeSessionId: "sess-1", oldFolder: "/old", newFolder: "/work/b" } },
+      { request: { nativeSessionId: "sess-2", oldFolder: "/work/a", newFolder: "/work/b" } },
+    ]);
   }).pipe(Effect.provide(IdAllocator.layer)),
 );

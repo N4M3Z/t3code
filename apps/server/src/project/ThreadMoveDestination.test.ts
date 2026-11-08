@@ -13,7 +13,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import type { PlatformError } from "effect/PlatformError";
 
 import {
   member,
@@ -55,8 +54,7 @@ const thread = (
   worktreePath: string | null,
   extra?: {
     readonly parent?: string;
-    readonly relationship?: "fork" | "subagent";
-    readonly sideChat?: boolean;
+    readonly kind?: "fork" | "side" | "subagent";
     readonly deleted?: boolean;
   },
 ): ThreadMoveShell => ({
@@ -67,9 +65,9 @@ const thread = (
   providerInstanceId: ProviderInstanceId.make("claudeAgent"),
   lineage: {
     parentThreadId: extra?.parent === undefined ? null : ThreadId.make(extra.parent),
-    relationshipToParent: extra?.relationship ?? null,
+    relationshipToParent: extra?.kind === "side" ? "fork" : (extra?.kind ?? null),
     rootThreadId: ThreadId.make(extra?.parent ?? id),
-    ...(extra?.sideChat === true ? { sideChat: true } : {}),
+    ...(extra?.kind === "side" ? { sideChat: true } : {}),
   },
   deletedAt: extra?.deleted === true ? DateTime.makeUnsafe(0) : null,
 });
@@ -88,7 +86,7 @@ const provider = (
   configDir?: string,
 ): ThreadMoveProviderInstance => ({
   driver: ProviderDriverKind.make(driver),
-  capabilities: { sessions: supportsFolderMove ? { ...sessions, supportsFolderMove } : sessions },
+  capabilities: { sessions: { ...sessions, supportsFolderMove } },
   version,
   environment: configDir === undefined ? {} : { CLAUDE_CONFIG_DIR: configDir },
 });
@@ -149,13 +147,13 @@ const makeWorld = Effect.gen(function* () {
   ];
   const threads = [
     thread("t1", "A", null),
-    thread("t1-side", "A", null, { parent: "t1", relationship: "fork", sideChat: true }),
-    thread("t1-sub", "A", null, { parent: "t1", relationship: "subagent" }),
-    thread("t1-fork", "A", null, { parent: "t1", relationship: "fork" }),
-    thread("t1-side-sub", "A", null, { parent: "t1-side", relationship: "subagent" }),
+    thread("t1-side", "A", null, { parent: "t1", kind: "side" }),
+    thread("t1-sub", "A", null, { parent: "t1", kind: "subagent" }),
+    thread("t1-fork", "A", null, { parent: "t1", kind: "fork" }),
+    thread("t1-side-sub", "A", null, { parent: "t1-side", kind: "subagent" }),
     thread("t2", "A", at("W")),
-    thread("t2-side", "A", at("W"), { parent: "t2", relationship: "fork", sideChat: true }),
-    thread("t2-fork", "A", at("W"), { parent: "t2", relationship: "fork" }),
+    thread("t2-side", "A", at("W"), { parent: "t2", kind: "side" }),
+    thread("t2-fork", "A", at("W"), { parent: "t2", kind: "fork" }),
     thread("picker", "B", at("W")),
     thread("linked", "B", at("link-W")),
     thread("gone", "B", at("W"), { deleted: true }),
@@ -182,6 +180,7 @@ const request = (threadId: string, destination: string | null, flags?: Flags) =>
 const idle = { runs: [], runtimeRequests: [] };
 const running = { runs: [{ status: "running" }], runtimeRequests: [] };
 const pending = { runs: [], runtimeRequests: [{ status: "pending" }] };
+const busy = Effect.succeed(true);
 const probeFailed = Effect.fail(new ThreadMoveError({ message: "probe failed" }));
 
 const decide = (world: World, input: ThreadMoveInput, setup: Setup = {}) =>
@@ -214,27 +213,14 @@ const decide = (world: World, input: ThreadMoveInput, setup: Setup = {}) =>
   });
 
 const onlyFor =
-  <A>(
-    threadId: string,
-    value: Effect.Effect<A, ThreadMoveError>,
-    otherwise: Effect.Effect<A, ThreadMoveError>,
-  ) =>
+  <A>(threadId: string, value: Effect.Effect<A, ThreadMoveError>, otherwise: A) =>
   (id: ThreadId) =>
-    id === threadId ? value : otherwise;
+    id === threadId ? value : Effect.succeed(otherwise);
 const records = (threadId: string, value: Records) => ({
-  probes: { threadRecords: onlyFor(threadId, Effect.succeed(value), Effect.succeed(idle)) },
+  probes: { threadRecords: onlyFor(threadId, Effect.succeed(value), idle) },
 });
-const background = (
-  threadId: string,
-  value: boolean | Effect.Effect<boolean, ThreadMoveError>,
-) => ({
-  probes: {
-    hasBackgroundWork: onlyFor(
-      threadId,
-      typeof value === "boolean" ? Effect.succeed(value) : value,
-      Effect.succeed(false),
-    ),
-  },
+const background = (threadId: string, value: Effect.Effect<boolean, ThreadMoveError>) => ({
+  probes: { hasBackgroundWork: onlyFor(threadId, value, false) },
 });
 const patch = (world: World, threadId: string, fields: Partial<ThreadMoveShell>) => ({
   threads: world.threads.map((shell) => (shell.id === threadId ? { ...shell, ...fields } : shell)),
@@ -316,14 +302,8 @@ it.layer(NodeServices.layer)("decideThreadMove", (it) => {
     [
       "asks to unarchive an archived No project",
       "t1",
-      (world) => ({
-        projects: world.projects.map((candidate) =>
-          candidate.id === "No project"
-            ? { ...candidate, archivedAt: "2026-01-02T00:00:00.000Z" }
-            : candidate,
-        ),
-      }),
-      refusal("Unarchive", named("No project")),
+      (world) => ({ scratchRoot: world.at("archived") }),
+      refusal("Unarchive", named("Archived")),
     ],
     ["moves a root thread at once", "t1", {}, movesTo("No project", "scratch")],
     ["asks leaving a worktree", "t2", {}, { _tag: "confirm", to: null, wayBack: "add-project" }],
@@ -345,20 +325,14 @@ it.layer(NodeServices.layer)("decideThreadMove", (it) => {
     }),
   );
 
-  it.effect(
-    "the move set holds subagents and side chats at any depth and stops at a listed fork",
-    () =>
-      Effect.gen(function* () {
-        const world = yield* makeWorld;
-        const members = collectMoveSet(ThreadId.make("t1"), world.threads).map(
-          (member) => member.id,
-        );
-        expect(members.toSorted()).toEqual(["t1", "t1-side", "t1-side-sub", "t1-sub"]);
-        const result = yield* decide(world, request("t1", world.at("projB")));
-        expect(result._tag === "move" ? result.members.map((member) => member.id) : []).toEqual(
-          members,
-        );
-      }),
+  it.effect("the move set holds members at any depth and stops at a listed fork", () =>
+    Effect.gen(function* () {
+      const world = yield* makeWorld;
+      const members = collectMoveSet(ThreadId.make("t1"), world.threads).map(({ id }) => id);
+      expect(members.toSorted()).toEqual(["t1", "t1-side", "t1-side-sub", "t1-sub"]);
+      const result = yield* decide(world, request("t1", world.at("projB")));
+      expect(result._tag === "move" ? result.members.map(({ id }) => id) : []).toEqual(members);
+    }),
   );
 
   type EligibilityCase = readonly [string, Setup, object];
@@ -366,7 +340,7 @@ it.layer(NodeServices.layer)("decideThreadMove", (it) => {
   it.effect.each<EligibilityCase>([
     ["a running turn", records("t1-sub", running), member("t1-sub", "Try again when the turn")],
     ["a pending request", records("t1-side", pending), member("t1-side")],
-    ["background work", background("t1-side", true), member("t1-side", "background work")],
+    ["background work", background("t1-side", busy), member("t1-side", "background work")],
     ["a failing probe", background("t1-side", probeFailed), member("t1-side", "background work")],
     [
       "another folder",
@@ -437,14 +411,7 @@ it.layer(NodeServices.layer)("decideThreadMove", (it) => {
     }),
   );
 
-  it.effect.each<
-    readonly [
-      string,
-      string,
-      (at: World["at"]) => object,
-      ((world: World) => Effect.Effect<void, PlatformError, FileSystem.FileSystem>)?,
-    ]
-  >([
+  it.effect.each<readonly [string, string, (at: World["at"]) => object, string?]>([
     [
       "leaving a worktree names the threads that stay in it, not the side chat that moves",
       "t2",
@@ -481,15 +448,13 @@ it.layer(NodeServices.layer)("decideThreadMove", (it) => {
         staysOnDisk: "The folder no longer exists.",
         otherThreads: ["t2-fork", "picker"].map(namedThread),
       }),
-      (world) =>
-        Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
-          fileSystem.remove(world.at("W"), { recursive: true }),
-        ),
+      "W",
     ],
-  ])("confirm: %s", ([, threadId, expected, before]) =>
+  ])("confirm: %s", ([, threadId, expected, removed]) =>
     Effect.gen(function* () {
       const world = yield* makeWorld;
-      yield* before?.(world) ?? Effect.void;
+      const fileSystem = yield* FileSystem.FileSystem;
+      if (removed) yield* fileSystem.remove(world.at(removed), { recursive: true });
       const input = request(threadId, world.at("projB"));
       const result = yield* decide(world, input);
       expect(result).toMatchObject(expected(world.at));

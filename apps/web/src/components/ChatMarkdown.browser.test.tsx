@@ -392,19 +392,17 @@ describe("ChatMarkdown workspace file opens", () => {
     using _read = vi.spyOn(projectEnvironment, "readFile").mockImplementation(
       ({ input }) =>
         Atom.make(
-          input.relativePath.startsWith("/school/old/")
-            ? AsyncResult.failure(
-                Cause.fail(
-                  new ProjectReadFileError({
-                    ...input,
-                    failure: "operation_failed",
-                    operation: "realpath-target",
-                    resolvedPath: input.relativePath,
-                    cause: { code: "ENOENT" },
-                  }),
-                ),
-              )
-            : AsyncResult.success({ ...input, contents: "Notes", byteLength: 5, truncated: false }),
+          AsyncResult.failure(
+            Cause.fail(
+              new ProjectReadFileError({
+                ...input,
+                failure: "operation_failed",
+                operation: "realpath-target",
+                resolvedPath: input.relativePath,
+                cause: { code: "ENOENT" },
+              }),
+            ),
+          ),
         ) as never,
     );
     await using panel = await render(

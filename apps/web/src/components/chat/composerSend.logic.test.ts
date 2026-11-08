@@ -134,7 +134,7 @@ describe("approvalRedirectNotice", () => {
   });
 });
 
-describe("folderMoveBlockReason", () => {
+it("folderMoveBlockReason refuses locally in a local draft and with context", () => {
   const ready = {
     supported: true,
     isLocalDraftThread: false,
@@ -142,19 +142,13 @@ describe("folderMoveBlockReason", () => {
     requestPending: false,
     textOnly: true,
   };
-
-  it("refuses locally in a local draft and with context", () => {
-    expect(folderMoveBlockReason({ ...ready, isLocalDraftThread: true })).toMatch(/project picker/);
-    expect(folderMoveBlockReason({ ...ready, textOnly: false })).toMatch(/attachments/);
-  });
+  expect(folderMoveBlockReason({ ...ready, isLocalDraftThread: true })).toMatch(/project picker/);
+  expect(folderMoveBlockReason({ ...ready, textOnly: false })).toMatch(/attachments/);
 });
 
 const threadId = ThreadId.make("thread-1");
 const request: ThreadMoveInput = { threadId, destination: "app" };
-const needsProject = {
-  _tag: "needs-project",
-  folder: "/repo/app",
-} as const satisfies ThreadMoveResult;
+const needsProject = { _tag: "needs-project", folder: "/repo/app" } as const;
 const confirm = {
   _tag: "confirm",
   from: "/worktrees/w",
@@ -163,78 +157,63 @@ const confirm = {
   wayBack: "add-project",
   otherThreads: [],
 } as const satisfies ThreadMoveResult;
-const moved = {
-  _tag: "moved",
-  folder: "/repo/app",
-  members: [],
-} as const satisfies ThreadMoveResult;
+const moved = { _tag: "moved", folder: "/repo/app", members: [] } as const;
 
-describe("runThreadMove", () => {
-  it("asks each question once, repeats with every flag so far, and stops at a decline", async () => {
-    const calls: ThreadMoveInput[] = [];
-    const answers: ReadonlyArray<ThreadMoveResult> = [needsProject, confirm, moved];
-    const move = async (input: ThreadMoveInput) => {
-      calls.push(input);
-      return answers[calls.length - 1]!;
-    };
-    expect(await runThreadMove(request, move, async () => true)).toBe(moved);
-    expect(calls).toEqual([
-      request,
-      { ...request, addProject: true },
-      { ...request, addProject: true, confirm: true },
-    ]);
+it("runThreadMove asks each question once, keeps every flag, and stops at a decline", async () => {
+  const calls: ThreadMoveInput[] = [];
+  const answers: ReadonlyArray<ThreadMoveResult> = [needsProject, confirm, moved];
+  const move = async (input: ThreadMoveInput) => {
+    calls.push(input);
+    return answers[calls.length - 1]!;
+  };
+  expect(await runThreadMove(request, move, async () => true)).toBe(moved);
+  expect(calls).toEqual([
+    request,
+    { ...request, addProject: true },
+    { ...request, addProject: true, confirm: true },
+  ]);
 
-    calls.length = 0;
-    const asked: string[] = [];
-    const declined = await runThreadMove(request, move, async (question) => {
-      asked.push(question._tag);
-      return question._tag === "needs-project";
-    });
-    expect(declined).toBeNull();
-    expect(asked).toEqual(["needs-project", "confirm"]);
-    expect(calls).toHaveLength(2);
-    const refused = { _tag: "refused", reason: "A member is busy." } as const;
-    expect(
-      await runThreadMove(
-        request,
-        async () => refused,
-        async () => {
-          throw new Error("asked");
-        },
-      ),
-    ).toBe(refused);
+  calls.length = 0;
+  const asked: string[] = [];
+  const declined = await runThreadMove(request, move, async (question) => {
+    asked.push(question._tag);
+    return question._tag === "needs-project";
   });
+  expect(declined).toBeNull();
+  expect(asked).toEqual(["needs-project", "confirm"]);
+  expect(calls).toHaveLength(2);
+  const refused = { _tag: "refused", reason: "A member is busy." } as const;
+  const ask = () => Promise.reject<boolean>(new Error("asked"));
+  expect(await runThreadMove(request, async () => refused, ask)).toBe(refused);
 });
 
-describe("threadMoveQuestionText", () => {
-  it("names the nesting, the folder left, the destination, the way back, and the threads", () => {
-    expect(
-      threadMoveQuestionText({
-        ...needsProject,
-        nestedIn: { projectId: ProjectId.make("p"), title: "App" },
-      }),
-    ).toBe("Create a project nested in App for /repo/app and move this thread there?");
-    expect(
-      threadMoveQuestionText({
-        ...confirm,
-        to: null,
-        wayBack: "none",
-        otherThreads: [{ threadId, title: "Fork" }],
-      }),
-    ).toBe(
-      [
-        "Move this thread out of /worktrees/w?",
-        "Its next turn runs in a new scratch folder.",
-        "The worktree stays on disk at /worktrees/w.",
-        "No command brings it back. Turn into project before the move keeps a way back.",
-        "Still working there: Fork.",
-      ].join("\n"),
-    );
-    expect(threadMoveQuestionText({ ...confirm, wayBack: "cd" })).toContain(
-      "/cd /worktrees/w brings it back as a root thread.",
-    );
-    expect(threadMoveQuestionText(confirm)).toContain(
-      "Adding /worktrees/w as a project first makes /cd /worktrees/w bring the thread back.",
-    );
-  });
+it("threadMoveQuestionText names nesting, folder left, destination, way back and threads", () => {
+  expect(
+    threadMoveQuestionText({
+      ...needsProject,
+      nestedIn: { projectId: ProjectId.make("p"), title: "App" },
+    }),
+  ).toBe("Create a project nested in App for /repo/app and move this thread there?");
+  expect(
+    threadMoveQuestionText({
+      ...confirm,
+      to: null,
+      wayBack: "none",
+      otherThreads: [{ threadId, title: "Fork" }],
+    }),
+  ).toBe(
+    [
+      "Move this thread out of /worktrees/w?",
+      "Its next turn runs in a new scratch folder.",
+      "The worktree stays on disk at /worktrees/w.",
+      "No command brings it back. Turn into project before the move keeps a way back.",
+      "Still working there: Fork.",
+    ].join("\n"),
+  );
+  expect(threadMoveQuestionText({ ...confirm, wayBack: "cd" })).toContain(
+    "/cd /worktrees/w brings it back as a root thread.",
+  );
+  expect(threadMoveQuestionText(confirm)).toContain(
+    "Adding /worktrees/w as a project first makes /cd /worktrees/w bring the thread back.",
+  );
 });

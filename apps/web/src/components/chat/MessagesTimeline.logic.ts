@@ -2714,19 +2714,13 @@ export function timelineRowFolder(
   row: MessagesTimelineRow,
   folders: ReturnType<typeof timelineRowFolders>,
 ): TimelineRunFolder | undefined {
-  const [runId, entryId] =
-    row.kind === "message"
-      ? [row.message.runId, row.id]
-      : row.kind === "proposed-plan"
-        ? [row.proposedPlan.runId, row.id]
-        : row.kind === "work"
-          ? [row.groupedEntries[0]?.runId, row.groupedEntries[0]?.id]
-          : row.kind === "work-live"
-            ? [row.entry.runId, row.entry.id]
-            : [null, row.id];
+  const entry =
+    row.kind === "work" ? row.groupedEntries[0] : row.kind === "work-live" ? row.entry : undefined;
+  const source =
+    row.kind === "message" ? row.message : row.kind === "proposed-plan" ? row.proposedPlan : entry;
   return (
-    (runId == null ? undefined : folders.byRunId.get(runId)) ??
-    (entryId === undefined ? undefined : folders.byEntryId.get(entryId))
+    (source?.runId == null ? undefined : folders.byRunId.get(source.runId)) ??
+    folders.byEntryId.get(entry?.id ?? row.id)
   );
 }
 

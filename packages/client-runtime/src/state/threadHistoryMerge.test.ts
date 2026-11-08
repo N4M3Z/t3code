@@ -153,13 +153,9 @@ describe("threadHistoryMerge", () => {
       turnItems: [local.item],
       visibleTurnItems: [preview, local],
     };
+    const page = () => [inherited(0), inherited(1)];
     const sourceFolders = [folder("run-source")];
-    const merged = mergeOlderHistoryIntoProjection(
-      projection,
-      [inherited(0), inherited(1)],
-      undefined,
-      sourceFolders,
-    );
+    const merged = mergeOlderHistoryIntoProjection(projection, page(), undefined, sourceFolders);
     expect(merged.runFolders).toEqual(sourceFolders);
     expect(
       merged.visibleTurnItems.map((entry) => [entry.sourceThreadId, entry.sourceItemId]),
@@ -170,14 +166,7 @@ describe("threadHistoryMerge", () => {
     ]);
     expect(merged.visibleTurnItems[1]?.item).toBe(preview.item);
     expect(merged.turnItems).toEqual([local.item]);
-    expect(
-      mergeOlderHistoryIntoProjection(
-        merged,
-        [inherited(0), inherited(1)],
-        undefined,
-        sourceFolders,
-      ),
-    ).toBe(merged);
+    expect(mergeOlderHistoryIntoProjection(merged, page(), undefined, sourceFolders)).toBe(merged);
   });
 
   it("retains live rows that arrived after the older page was fetched", () => {

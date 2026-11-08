@@ -4562,102 +4562,92 @@ describe("shouldCollapseUserMessage", () => {
   });
 });
 
-describe("timelineRowFolder", () => {
-  it("resolves rows against their run's folder, then the first move receipt after them", () => {
-    const base = {
-      ...makeStreamingTimelineFixture().visibleTurnItems[0]!,
-      visibility: "inherited" as const,
-    };
-    const item = (id: string, runId: RunId | null, fields: object) =>
-      ({ ...base.item, ...fields, id: TurnItemId.make(id), runId }) as OrchestrationV2TurnItem;
-    const user = (id: string, runId: RunId | null = null) =>
-      item(id, runId, {
-        type: "user_message",
-        messageId: MessageId.make(id),
-        text: id,
-        attachments: [],
-        inputIntent: "turn_start",
-        createdBy: "user",
-        creationSource: "web",
-      });
-    const notice = (id: string, previousFolder?: string) =>
-      item(id, null, { type: "system_notice", message: id, previousFolder });
-    const legacy = RunId.make("run-legacy");
-    const items = [
-      user("imported"),
-      user("legacy", legacy),
-      item("plan", legacy, {
-        type: "proposed_plan",
-        planId: "plan",
-        markdown: "plan",
-        streaming: false,
-      }),
-      user("in-c", RunId.make("run-c")),
-      user("inherited", RunId.make("run-inherited")),
-      user("live-wins", RunId.make("run-b")),
-      notice("move-a", "/a"),
-      user("after-a"),
-      notice("plain"),
-      notice("move-b", "/b"),
-      user("after-b", legacy),
-    ];
-    const entries = deriveTimelineEntriesFromVisibleTurnItems({
-      visibleTurnItems: items.map((item, position) => ({
-        ...base,
-        item,
-        position,
-        sourceItemId: item.id,
-      })),
-      optimisticMessages: [],
-    });
-    const folders = timelineRowFolders(
-      runFoldersSignature(
-        [
-          { id: RunId.make("run-c"), cwd: "/c", repositoryRoot: "/repo-c" },
-          { id: RunId.make("run-b"), cwd: "/worktree" },
-          { id: legacy },
-        ],
-        [
-          { id: RunId.make("run-b"), cwd: "/stale" },
-          { id: RunId.make("run-inherited"), cwd: "/source" },
-        ],
-      ),
-      receiptFoldersSignature(entries),
-    );
-    const folder = (row: object) => timelineRowFolder(row as MessagesTimelineRow, folders);
-    expect(folder({ kind: "work", groupedEntries: [{ runId: RunId.make("run-c") }] })).toEqual({
-      cwd: "/c",
-      repositoryRoot: "/repo-c",
-    });
-    expect(folder({ kind: "work-live", entry: { runId: RunId.make("run-b") } })).toEqual({
-      cwd: "/worktree",
-    });
-
-    for (const toolCallVisibility of ["showAll", "zen"] as const) {
-      const rows = deriveMessagesTimelineRows({
-        timelineEntries: entries,
-        isWorking: false,
-        turnDiffSummaries: [],
-        supportsConversationRollback: false,
-        toolCallVisibility,
-      });
-      expect(rows.filter((row) => row.kind === "work").map(folder)).toEqual(
-        toolCallVisibility === "showAll" ? [{ cwd: "/b" }, { cwd: "/b" }, undefined] : [],
-      );
-      expect(
-        rows.flatMap((row) =>
-          row.kind === "message" || row.kind === "proposed-plan" ? [folder(row)] : [],
-        ),
-      ).toEqual([
-        { cwd: "/a" },
-        { cwd: "/a" },
-        { cwd: "/a" },
-        { cwd: "/c", repositoryRoot: "/repo-c" },
-        { cwd: "/source" },
-        { cwd: "/worktree" },
-        { cwd: "/b" },
-        undefined,
-      ]);
-    }
+it("timelineRowFolder takes the run's folder, then the first move receipt after the row", () => {
+  const base = {
+    ...makeStreamingTimelineFixture().visibleTurnItems[0]!,
+    visibility: "inherited" as const,
+  };
+  const item = (id: string, runId: RunId | null, fields: object) =>
+    ({ ...base.item, ...fields, id: TurnItemId.make(id), runId }) as OrchestrationV2TurnItem;
+  const user = (id: string, runId: RunId | null = null) =>
+    item(id, runId, { messageId: MessageId.make(id), text: id });
+  const notice = (id: string, previousFolder?: string) =>
+    item(id, null, { type: "system_notice", message: id, previousFolder });
+  const legacy = RunId.make("run-legacy");
+  const items = [
+    user("imported"),
+    user("legacy", legacy),
+    item("plan", legacy, {
+      type: "proposed_plan",
+      planId: "plan",
+      markdown: "plan",
+      streaming: false,
+    }),
+    user("in-c", RunId.make("run-c")),
+    user("inherited", RunId.make("run-inherited")),
+    user("live-wins", RunId.make("run-b")),
+    notice("move-a", "/a"),
+    user("after-a"),
+    notice("plain"),
+    notice("move-b", "/b"),
+    user("after-b", legacy),
+  ];
+  const entries = deriveTimelineEntriesFromVisibleTurnItems({
+    visibleTurnItems: items.map((item, position) => ({
+      ...base,
+      item,
+      position,
+      sourceItemId: item.id,
+    })),
+    optimisticMessages: [],
   });
+  const folders = timelineRowFolders(
+    runFoldersSignature(
+      [
+        { id: RunId.make("run-c"), cwd: "/c", repositoryRoot: "/repo-c" },
+        { id: RunId.make("run-b"), cwd: "/worktree" },
+        { id: legacy },
+      ],
+      [
+        { id: RunId.make("run-b"), cwd: "/stale" },
+        { id: RunId.make("run-inherited"), cwd: "/source" },
+      ],
+    ),
+    receiptFoldersSignature(entries),
+  );
+  const folder = (row: object) => timelineRowFolder(row as MessagesTimelineRow, folders);
+  expect(folder({ kind: "work", groupedEntries: [{ runId: RunId.make("run-c") }] })).toEqual({
+    cwd: "/c",
+    repositoryRoot: "/repo-c",
+  });
+  expect(folder({ kind: "work-live", entry: { runId: RunId.make("run-b") } })).toEqual({
+    cwd: "/worktree",
+  });
+
+  for (const toolCallVisibility of ["showAll", "zen"] as const) {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: entries,
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+      toolCallVisibility,
+    });
+    expect(rows.filter((row) => row.kind === "work").map(folder)).toEqual(
+      toolCallVisibility === "showAll" ? [{ cwd: "/b" }, { cwd: "/b" }, undefined] : [],
+    );
+    expect(
+      rows.flatMap((row) =>
+        row.kind === "message" || row.kind === "proposed-plan" ? [folder(row)] : [],
+      ),
+    ).toEqual([
+      { cwd: "/a" },
+      { cwd: "/a" },
+      { cwd: "/a" },
+      { cwd: "/c", repositoryRoot: "/repo-c" },
+      { cwd: "/source" },
+      { cwd: "/worktree" },
+      { cwd: "/b" },
+      undefined,
+    ]);
+  }
 });

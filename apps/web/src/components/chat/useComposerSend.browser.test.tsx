@@ -62,9 +62,8 @@ async function setup(options: {
   appAtomRegistry.set(mocks.serverConfigs, new Map([[ENV, { environment: { capabilities } }]]));
   const saveEdit = vi.fn();
   const answer = vi.fn();
-  const prompt = "/cd ..";
-  const promptRef = { current: prompt };
-  useComposerDraftStore.getState().setPrompt(DRAFT_TARGET, prompt);
+  const promptRef = { current: "/cd .." };
+  useComposerDraftStore.getState().setPrompt(DRAFT_TARGET, promptRef.current);
   const sendContext = {
     images: [],
     files: [],
@@ -130,22 +129,10 @@ async function setup(options: {
 }
 
 it.each([
-  {
-    during: "a queued message edit",
-    editingQueuedMessage: true,
-    reason: "Save or cancel the queued message edit first.",
-  },
-  {
-    during: "a pending question",
-    pendingQuestion: true,
-    reason: "Answer the pending question or approval first.",
-  },
-  {
-    during: "a session on an older server",
-    folderMove: false,
-    reason: "Update this environment's T3 Code server to move threads.",
-  },
-])("a typed /cd during $during reaches no other send path", async (scenario) => {
+  { reason: "Save or cancel the queued message edit first.", editingQueuedMessage: true },
+  { reason: "Answer the pending question or approval first.", pendingQuestion: true },
+  { reason: "Update this environment's T3 Code server to move threads.", folderMove: false },
+])("a typed /cd refused with $reason reaches no other send path", async (scenario) => {
   const { screen, send, saveEdit, answer, promptRef, draftPrompt } = await setup({
     folderMove: true,
     ...scenario,

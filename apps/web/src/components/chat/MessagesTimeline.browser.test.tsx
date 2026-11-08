@@ -1572,148 +1572,136 @@ it("keeps concurrent approvals actionable outside collapsed work and restores se
     .toBeVisible();
 });
 
-describe("MessagesTimeline file links", () => {
-  it("opens a row's relative links under its run's folder", async () => {
-    const providerInstanceId = ProviderInstanceId.make("codex");
-    const run = (id: string, folder: object = {}) => ({
-      id: RunId.make(id),
-      ordinal: 1,
-      providerInstanceId,
-      modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
-      ...folder,
-    });
-    const mention = {
-      version: 1 as const,
-      kind: "mention" as const,
-      contextId: ComposerContextId.make("mention-notes"),
-      label: "notes.md",
-      path: "notes.md",
-    };
-    const entries = [
-      message("See [notes](notes.txt).", {}, "imported"),
-      {
+it("opens a row's relative links under its run's folder", async () => {
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  const run = (id: string, folder: object = {}) => ({
+    id: RunId.make(id),
+    ordinal: 1,
+    providerInstanceId,
+    modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+    ...folder,
+  });
+  const mention = {
+    version: 1 as const,
+    kind: "mention" as const,
+    contextId: ComposerContextId.make("mention-notes"),
+    label: "notes.md",
+    path: "notes.md",
+  };
+  const entries = [
+    message("See [notes](notes.txt).", {}, "imported"),
+    {
+      id: "plan",
+      kind: "proposed-plan",
+      createdAt: CREATED_AT,
+      proposedPlan: {
         id: "plan",
-        kind: "proposed-plan",
+        runId: null,
+        planMarkdown: "See [plan](plan-notes.txt).",
+        status: "active",
         createdAt: CREATED_AT,
-        proposedPlan: {
-          id: "plan",
-          runId: null,
-          planMarkdown: "See [plan](plan-notes.txt).",
-          status: "active",
-          createdAt: CREATED_AT,
-          updatedAt: CREATED_AT,
+        updatedAt: CREATED_AT,
+      },
+    } as Entry,
+    work("move-receipt", {
+      itemType: "system_notice",
+      label: "Moved.",
+      structuredPayload: { type: "system_notice", previousFolder: "/repo-before" },
+    }),
+    message("See [a](src/a.ts).", { runId: RunId.make("run-1") }, "in-run"),
+    message("See [b](src/b.ts).", {}, "runless"),
+    message("See [c](src/c.ts).", { runId: RunId.make("run-paged") }, "paged"),
+    message(
+      `Read ${formatComposerContextReference(mention)}`,
+      { runId: RunId.make("run-1"), context: { version: 1, records: [mention] } },
+      "mention",
+    ),
+    message("Done", { role: "assistant", runId: RunId.make("run-1") }, "changed"),
+  ];
+  const ui = (props: Partial<TimelineProps>) => (
+    <MessagesTimeline
+      {...baseProps()}
+      routeThreadKey="environment-local:thread-file-links"
+      timelineEntries={entries}
+      workspaceRoot="/repo-w/app"
+      markdownCwd="/repo-w/app"
+      turnDiffSummaries={[
+        {
+          runId: RunId.make("run-1"),
+          checkpointTurnCount: 1,
+          checkpointRef: "checkpoint-1" as never,
+          status: "ready",
+          files: [{ path: "app/kept.txt", kind: "modified", additions: 1, deletions: 0 }],
+          assistantMessageId: MessageId.make("changed"),
+          completedAt: CREATED_AT,
         },
-      } as Entry,
-      work("move-receipt", {
-        itemType: "system_notice",
-        label: "Moved.",
-        structuredPayload: { type: "system_notice", previousFolder: "/repo-before" },
-      }),
-      message("See [a](src/a.ts).", { runId: RunId.make("run-1") }, "in-run"),
-      message("See [b](src/b.ts).", {}, "runless"),
-      message("See [c](src/c.ts).", { runId: RunId.make("run-paged") }, "paged"),
-      message(
-        `Read ${formatComposerContextReference(mention)}`,
-        { runId: RunId.make("run-1"), context: { version: 1, records: [mention] } },
-        "mention",
-      ),
-      message("Done", { role: "assistant", runId: RunId.make("run-1") }, "changed"),
-    ];
-    const ui = (props: Partial<TimelineProps>) => (
-      <MessagesTimeline
-        {...baseProps()}
-        routeThreadKey="environment-local:thread-file-links"
-        timelineEntries={entries}
-        workspaceRoot="/repo-w/app"
-        markdownCwd="/repo-w/app"
-        turnDiffSummaries={[
-          {
-            runId: RunId.make("run-1"),
-            checkpointTurnCount: 1,
-            checkpointRef: "checkpoint-1" as never,
-            status: "ready",
-            files: [{ path: "app/kept.txt", kind: "modified", additions: 1, deletions: 0 }],
-            assistantMessageId: MessageId.make("changed"),
-            completedAt: CREATED_AT,
-          },
-        ]}
-        {...props}
-      />
-    );
-    using _threadShell = vi
-      .spyOn(environmentThreadShells, "threadShellAtom")
-      .mockReturnValue(
-        Atom.make({ environmentId: ENVIRONMENT_ID, projectId: "project-w" }) as never,
-      );
-    using _project = vi
-      .spyOn(environmentProjects, "projectAtom")
-      .mockReturnValue(Atom.make({ repositoryIdentity: { rootPath: "/repo-w" } }) as never);
-    await using screen = await renderElement(ui({ runs: [run("run-1")] }));
-    using openFile = vi
-      .spyOn(useRightPanelStore.getState(), "openFile")
-      .mockImplementation(() => {});
-    const opened = async () => {
-      openFile.mockClear();
-      const links = [
-        ...screen.container.querySelectorAll<HTMLElement>("a.chat-markdown-file-link"),
-      ];
-      for (const link of links) await click(link);
-      await click(screen.button("Preview notes.md"));
-      return openFile.mock.calls.map((call) => call[1]);
-    };
-    await vi.waitFor(() =>
-      expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(5),
-    );
+      ]}
+      {...props}
+    />
+  );
+  using _threadShell = vi
+    .spyOn(environmentThreadShells, "threadShellAtom")
+    .mockReturnValue(Atom.make({ environmentId: ENVIRONMENT_ID, projectId: "project-w" }) as never);
+  using _project = vi
+    .spyOn(environmentProjects, "projectAtom")
+    .mockReturnValue(Atom.make({ repositoryIdentity: { rootPath: "/repo-w" } }) as never);
+  await using screen = await renderElement(ui({ runs: [run("run-1")] }));
+  using openFile = vi.spyOn(useRightPanelStore.getState(), "openFile").mockImplementation(() => {});
+  const opened = async () => {
+    openFile.mockClear();
+    const links = [...screen.container.querySelectorAll<HTMLElement>("a.chat-markdown-file-link")];
+    for (const link of links) await click(link);
+    await click(screen.button("Preview notes.md"));
+    return openFile.mock.calls.map((call) => call[1]);
+  };
+  const noFolders = [
+    "/repo-before/notes.txt",
+    "/repo-before/plan-notes.txt",
+    "src/a.ts",
+    "src/b.ts",
+    "src/c.ts",
+    "notes.md",
+  ];
+  await vi.waitFor(() =>
+    expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(5),
+  );
+  expect(await opened()).toEqual(noFolders);
+
+  await screen.rerender(
+    ui({
+      runs: [run("run-1", { cwd: "/repo-a/app", repositoryRoot: "/repo-a" })],
+      runFolders: [{ id: RunId.make("run-paged"), cwd: "/repo-old" }],
+    }),
+  );
+  await vi.waitFor(async () =>
     expect(await opened()).toEqual([
       "/repo-before/notes.txt",
       "/repo-before/plan-notes.txt",
-      "src/a.ts",
+      "/repo-a/app/src/a.ts",
       "src/b.ts",
-      "src/c.ts",
-      "notes.md",
-    ]);
+      "/repo-old/src/c.ts",
+      "/repo-a/app/notes.md",
+    ]),
+  );
 
-    await screen.rerender(
-      ui({
-        runs: [run("run-1", { cwd: "/repo-a/app", repositoryRoot: "/repo-a" })],
-        runFolders: [{ id: RunId.make("run-paged"), cwd: "/repo-old" }],
-      }),
-    );
-    await vi.waitFor(async () =>
-      expect(await opened()).toEqual([
-        "/repo-before/notes.txt",
-        "/repo-before/plan-notes.txt",
-        "/repo-a/app/src/a.ts",
-        "src/b.ts",
-        "/repo-old/src/c.ts",
-        "/repo-a/app/notes.md",
-      ]),
-    );
+  await click(screen.button(/^app/));
+  for (const [folder, target] of [
+    [{ cwd: "/repo-a/app", repositoryRoot: "/repo-a" }, "/repo-a/app/kept.txt"],
+    [{ cwd: "/repo-w/app" }, "/repo-w/app/kept.txt"],
+    [{ cwd: "/repo-old" }, "/repo-old/app/kept.txt"],
+  ] as const) {
+    await screen.rerender(ui({ runs: [run("run-1", folder)] }));
+    await vi.waitFor(() => {
+      fileMenu.targets = [];
+      screen.button(/^kept\.txt/).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      expect(fileMenu.targets.map(resolveFileContextMenuAbsolutePath)).toEqual([target]);
+    });
+  }
 
-    await click(screen.button(/^app/));
-    for (const [folder, target] of [
-      [{ cwd: "/repo-a/app", repositoryRoot: "/repo-a" }, "/repo-a/app/kept.txt"],
-      [{ cwd: "/repo-w/app" }, "/repo-w/app/kept.txt"],
-      [{ cwd: "/repo-old" }, "/repo-old/app/kept.txt"],
-    ] as const) {
-      await screen.rerender(ui({ runs: [run("run-1", folder)] }));
-      await vi.waitFor(() => {
-        fileMenu.targets = [];
-        screen.button(/^kept\.txt/).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
-        expect(fileMenu.targets.map(resolveFileContextMenuAbsolutePath)).toEqual([target]);
-      });
-    }
-
-    expect(screen.text()).toContain("Moved.");
-    onTestFinished(() => __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS));
-    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, toolCallVisibility: "zen" });
-    await screen.rerender(ui({ runs: [run("run-1")] }));
-    await vi.waitFor(() => expect(screen.text()).not.toContain("Moved."));
-    expect(screen.container.querySelector("a.chat-markdown-file-link")?.getAttribute("href")).toBe(
-      "/repo-before/notes.txt",
-    );
-    expect(
-      screen.container.querySelectorAll("a.chat-markdown-file-link")[1]?.getAttribute("href"),
-    ).toBe("/repo-before/plan-notes.txt");
-  });
+  expect(screen.text()).toContain("Moved.");
+  onTestFinished(() => __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS));
+  __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, toolCallVisibility: "zen" });
+  await screen.rerender(ui({ runs: [run("run-1")] }));
+  await vi.waitFor(() => expect(screen.text()).not.toContain("Moved."));
+  expect(await opened()).toEqual(noFolders);
 });

@@ -124,22 +124,20 @@ export function threadMoveQuestionText(question: ThreadMoveQuestion): string {
     const nested = question.nestedIn ? ` nested in ${question.nestedIn.title}` : "";
     return `Create a project${nested} for ${question.folder} and move this thread there?`;
   }
-  const wayBack =
-    question.wayBack === "cd"
-      ? `/cd ${question.from} brings it back as a root thread.`
-      : question.wayBack === "add-project"
-        ? `Adding ${question.from} as a project first makes /cd ${question.from} bring the thread back.`
-        : "No command brings it back. Turn into project before the move keeps a way back.";
+  const wayBack = {
+    cd: `/cd ${question.from} brings it back as a root thread.`,
+    "add-project": `Adding ${question.from} as a project first makes /cd ${question.from} bring the thread back.`,
+    none: "No command brings it back. Turn into project before the move keeps a way back.",
+  }[question.wayBack];
   return [
     `Move this thread out of ${question.from}?`,
     `Its next turn runs in ${question.to ?? "a new scratch folder"}.`,
     question.staysOnDisk,
     wayBack,
-    ...(question.project
-      ? [`The folder stays the root of project ${question.project.title}.`]
-      : []),
-    ...(question.otherThreads.length > 0
-      ? [`Still working there: ${question.otherThreads.map((thread) => thread.title).join(", ")}.`]
-      : []),
-  ].join("\n");
+    question.project && `The folder stays the root of project ${question.project.title}.`,
+    question.otherThreads.length > 0 &&
+      `Still working there: ${question.otherThreads.map((thread) => thread.title).join(", ")}.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

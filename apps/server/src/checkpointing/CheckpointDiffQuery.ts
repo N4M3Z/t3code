@@ -195,7 +195,6 @@ export const make = Effect.gen(function* () {
                 ordinalWithinScope: 0,
               }).pipe(Effect.provideService(Digest.Digest, digest))
           : fromCheckpoint?.ref;
-      // Refs live in the folder the owning run recorded; the scope's cwd moves with the thread.
       // Run 1 captured the thread baseline, and each run captures its own baseline in its folder.
       const fromEnd =
         input.fromTurnCount === 0

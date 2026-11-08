@@ -1482,7 +1482,6 @@ function inheritedRunFork(thread: Pick<OrchestrationV2AppThread, "forkedFrom" | 
 
 type RunFolder = Pick<OrchestrationV2Run, "id" | "cwd" | "repositoryRoot">;
 
-// Only runs that recorded a folder are listed; rows without one use the current folder.
 function runFoldersFor(
   runs: ReadonlyArray<RunFolder>,
   runIds: ReadonlySet<RunId | null>,

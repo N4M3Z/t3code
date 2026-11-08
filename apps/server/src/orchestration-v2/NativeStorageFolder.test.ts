@@ -47,10 +47,8 @@ const providerThread = (nativeId: string, recorded?: string) => ({
 const runs = [run(4, "/repo/d"), run(1), run(3, "/repo/b"), run(2)];
 const checkpointScopes = [
   rootScope(4, "/repo/d"),
-  // Run 3 was queued in another folder; its cwd says where it ran.
   rootScope(3, "/repo/queued"),
   rootScope(2, "/repo/a"),
-  // Run 1 was queued in another folder, then scoped again where it ran.
   rootScope(1, "/repo/other-queued", otherRow),
   rootScope(1, "/repo/other", otherRow),
   { kind: "subagent" as const, runId: RunId.make("run:1"), providerThreadId: row, cwd: "/repo/x" },
@@ -67,7 +65,6 @@ describe("nativeStorageFolder", () => {
     {
       name: "uses the cwd of the earliest run that sent to the session, not the row's earliest run",
       providerThread: providerThread("session-b"),
-      // Runs 1-2 used session-a; a failed resume gave the row session-b in run 3.
       attempts: [
         attempt(4, "session-b"),
         attempt(2, "session-a"),
@@ -79,7 +76,6 @@ describe("nativeStorageFolder", () => {
     {
       name: "falls back to the earliest run's latest scope event when its runs have no cwd",
       providerThread: providerThread("session-a"),
-      // Session-a moved rows on a cross-instance resume; run 1 sent to it from the other row.
       attempts: [attempt(2, "session-a"), attempt(1, "session-a", otherRow)],
       expected: "/repo/other",
     },

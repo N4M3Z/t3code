@@ -7111,7 +7111,6 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         assert.deepEqual(yield* page(fork), forkProjection.visibleTurnItems);
         for (const rows of [
           shape(forkProjection.visibleTurnItems),
-          shape(yield* page(fork)),
           yield* window(2, undefined, fork),
           yield* window(3, undefined, fork),
         ]) {

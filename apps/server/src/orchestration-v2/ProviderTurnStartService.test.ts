@@ -34,6 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -61,6 +62,7 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -307,6 +309,7 @@ function makeLocalCommandHarness(input: {
    * A side chat whose context targets this run, an earlier run that failed or was cancelled before
    * the provider, or an earlier run that delivered it. `nativeForkFrom` plans a native fork of the
    * parent. `switchedProvider` puts the earlier run and its context on another provider thread.
+   * `moveDuringFork` commits a parent relocation under its lock after the fork's first outbox query.
    */
   readonly sideChat?: {
     readonly contextRun: "current" | "failed" | "cancelled" | "delivered";
@@ -315,6 +318,8 @@ function makeLocalCommandHarness(input: {
     readonly threadRuntimeMode?: OrchestrationV2ThreadProjection["thread"]["runtimeMode"];
     readonly parentRunCwd?: string;
     readonly relocation?: Deferred.Deferred<void>;
+    readonly moveDuringFork?: boolean;
+    readonly parentStorageFolder?: string;
   };
 }) {
   const settledRuns: Array<string> = [];
@@ -501,6 +506,9 @@ function makeLocalCommandHarness(input: {
       nativeId: "side-chat-parent-native",
       strength: "strong" as const,
     },
+    ...(input.sideChat?.parentStorageFolder === undefined
+      ? {}
+      : { nativeStorageFolder: input.sideChat.parentStorageFolder }),
   };
   const parentProviderTurn = (ordinal: number, attemptRunId: RunId) => ({
     attempt: {
@@ -602,6 +610,22 @@ function makeLocalCommandHarness(input: {
   );
   const relocation = input.sideChat?.relocation;
   const relocationAwaited = Deferred.makeUnsafe<void>();
+  let pendingRelocations: ReadonlyArray<string> =
+    relocation === undefined ? [] : ["relocate-parent"];
+  const relocationsAtFork: Array<ReadonlyArray<string>> = [];
+  const commitMove = (attempted: Queue.Queue<void>) =>
+    Effect.gen(function* () {
+      const locks = Option.getOrThrow(
+        yield* Effect.serviceOption(ThreadCommandExecutor.ThreadCommandExecutor),
+      );
+      yield* Queue.offer(attempted, undefined);
+      yield* locks.withLock(
+        parentThreadId,
+        Effect.sync(() => {
+          pendingRelocations = ["relocate-parent"];
+        }),
+      );
+    });
   if (input.sideChat !== undefined) {
     const earlierRunId = RunId.make("side-chat-earlier-run");
     projection = {
@@ -834,7 +858,10 @@ function makeLocalCommandHarness(input: {
     },
   };
   const forkThread = vi.fn((_fork: ProviderAdapter.ProviderAdapterV2ForkThreadInput) =>
-    Effect.succeed(sideChatThread),
+    Effect.sync(() => {
+      relocationsAtFork.push(pendingRelocations);
+      return sideChatThread;
+    }),
   );
   const sideChatSession = {
     driver: providerThread.driver,
@@ -954,7 +981,7 @@ function makeLocalCommandHarness(input: {
       ),
     }),
   );
-  const layer = ProviderTurnStart.layer.pipe(
+  const layer = Layer.merge(ProviderTurnStart.layer, ThreadCommandExecutor.layer).pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
@@ -985,7 +1012,15 @@ function makeLocalCommandHarness(input: {
         Layer.mock(EventStore.EventStoreV2)({ read: readEvents }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           unsettledEffectIds: () =>
-            Effect.succeed(relocation === undefined ? [] : ["relocate-parent"]),
+            Effect.gen(function* () {
+              const ids = pendingRelocations;
+              if (input.sideChat?.moveDuringFork === true) {
+                const attempted = yield* Queue.unbounded<void>();
+                yield* Effect.forkChild(commitMove(attempted));
+                yield* Queue.take(attempted);
+              }
+              return ids;
+            }),
           awaitSettled: () =>
             relocation === undefined
               ? Effect.void
@@ -1089,6 +1124,7 @@ function makeLocalCommandHarness(input: {
     forkThread,
     readEvents,
     relocationAwaited,
+    relocationsAtFork,
     interruptTurn,
     tryHandlePromptCommand,
     events,
@@ -1494,6 +1530,33 @@ effectIt.effect("forks a Codex parent without waiting for a Claude relocation on
     yield* Effect.race(Deferred.await(harness.relocationAwaited), Fiber.await(start));
     expect(harness.forkThread).toHaveBeenCalledOnce();
   }),
+);
+
+effectIt.effect.each([
+  { parentStorageFolder: "/repo/side-chat-parent-recorded" },
+  { parentStorageFolder: undefined },
+])(
+  "blocks a move between the fork's relocation check and the fork: folder $parentStorageFolder",
+  ({ parentStorageFolder }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "What is the main thread doing?",
+        driver: ProviderDriverKind.make("claudeAgent"),
+        sideChat: {
+          contextRun: "current",
+          nativeForkFrom: "idle",
+          moveDuringFork: true,
+          ...(parentStorageFolder === undefined ? {} : { parentStorageFolder }),
+        },
+      });
+
+      yield* harness.start;
+
+      expect(harness.relocationsAtFork).toEqual([[]]);
+      expect(harness.forkThread.mock.calls[0]?.[0].sourceNativeStorageFolder).toBe(
+        parentStorageFolder ?? "/repo/side-chat-parent",
+      );
+    }),
 );
 
 effectIt.effect.each([true, false])(

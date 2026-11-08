@@ -56,6 +56,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import {
   ContextHandoffBackgroundWorkError,
   knownProviderFailureMessage,
@@ -169,6 +170,7 @@ export const layer: Layer.Layer<
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const threadLocks = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
@@ -1160,7 +1162,7 @@ export const layer: Layer.Layer<
       let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
-      const loadedProviderThread = yield* Effect.gen(function* () {
+      const loadProviderThread = Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           // A move relocates the source's Claude transcript before its row records the new folder.
           const relocating =
@@ -1488,6 +1490,11 @@ export const layer: Layer.Layer<
         });
         return replacement;
       });
+      // Moves commit under the source's lock, so none lands between the storage check and the fork.
+      const loadedProviderThread = yield* nativeForkTransfer === undefined ||
+      session.driver !== "claudeAgent"
+        ? loadProviderThread
+        : threadLocks.withLock(nativeForkTransfer.sourceThreadId, loadProviderThread);
       if (loadedProviderThread === undefined) return;
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
@@ -1863,4 +1870,4 @@ export const layer: Layer.Layer<
       ),
     });
   }),
-);
+).pipe(Layer.provide(ThreadCommandExecutor.layer));

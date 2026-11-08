@@ -1391,9 +1391,12 @@ function forkBoundaryOrdinal(
   items: ReadonlyArray<ForkHistoryItem>,
   runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>,
   sourceRunOrdinal: number,
+  historyOrigin: OrchestrationV2ThreadProjection["thread"]["historyOrigin"],
 ): number {
   let boundaryRun = -1;
   let boundary = -1;
+  if (historyOrigin === "v1_import")
+    boundary = items.findLast((item) => item.runId === null && !isMoveReceipt(item))?.ordinal ?? -1;
   for (const item of items) {
     const run = item.runId === null ? undefined : runOrdinalById.get(item.runId);
     if (run === undefined || run > sourceRunOrdinal || run < boundaryRun) continue;
@@ -1431,7 +1434,12 @@ function visibleTurnItemsThroughRun(input: {
   const runOrdinalById = new Map(input.sourceProjection.runs.map((run) => [run.id, run.ordinal]));
   const boundaryOrdinal =
     input.boundaryOrdinal ??
-    forkBoundaryOrdinal(input.sourceProjection.turnItems, runOrdinalById, sourceRun.ordinal);
+    forkBoundaryOrdinal(
+      input.sourceProjection.turnItems,
+      runOrdinalById,
+      sourceRun.ordinal,
+      input.sourceProjection.thread.historyOrigin,
+    );
   const inheritedPrefix = input.sourceProjection.visibleTurnItems
     .filter(
       (row) => row.item.threadId !== input.sourceProjection.thread.id || row.item.type === "fork",
@@ -5868,7 +5876,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         if (sourceRun !== undefined) {
           const ordinals = new Map(source.records.runs.map((run) => [run.id, run.ordinal]));
           const sourceItems = source.local.map((row) => row.item);
-          const boundaryOrdinal = forkBoundaryOrdinal(sourceItems, ordinals, sourceRun.ordinal);
+          const boundaryOrdinal = forkBoundaryOrdinal(
+            sourceItems,
+            ordinals,
+            sourceRun.ordinal,
+            source.records.thread.historyOrigin,
+          );
           inherited = [
             ...source.visible.filter(
               (row) => row.item.threadId !== fork.threadId || row.item.type === "fork",

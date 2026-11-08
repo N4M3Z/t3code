@@ -6755,7 +6755,9 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const sourceThreadId = ThreadId.make("thread:projection-imported-fork-shell:source");
       const targetThreadId = ThreadId.make("thread:projection-imported-fork-shell:target");
       const sideChatThreadId = ThreadId.make("thread:projection-imported-fork-shell:side-chat");
+      const emptyForkThreadId = ThreadId.make("thread:projection-imported-fork-shell:empty-fork");
       const sourceRunId = RunId.make("run:projection-imported-fork-shell:source");
+      const emptyRunId = RunId.make("run:projection-imported-fork-shell:empty");
       const rootNodeId = NodeId.make("node:projection-imported-fork-shell:source");
 
       yield* projectionStore.apply({
@@ -6792,9 +6794,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           deletedAt: null,
         },
       });
-      for (const [threadId, sideChat] of [
-        [targetThreadId, false],
-        [sideChatThreadId, true],
+      for (const [threadId, sideChat, runId] of [
+        [targetThreadId, false, sourceRunId],
+        [sideChatThreadId, true, sourceRunId],
+        [emptyForkThreadId, false, emptyRunId],
       ] as const) {
         yield* projectionStore.apply({
           id: EventId.make(`event:projection-imported-fork-shell:created:${threadId}`),
@@ -6823,7 +6826,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             forkedFrom: {
               type: "run",
               threadId: sourceThreadId,
-              runId: sourceRunId,
+              runId,
             },
             createdAt: now,
             updatedAt: now,
@@ -6835,6 +6838,15 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           },
         });
       }
+      yield* projectionStore.apply(
+        runCreated({
+          id: emptyRunId,
+          threadId: sourceThreadId,
+          ordinal: 1,
+          providerInstanceId,
+          occurredAt: now,
+        }),
+      );
       yield* projectionStore.apply({
         id: EventId.make("event:projection-imported-fork-shell:source-run"),
         type: "run.created",
@@ -6846,7 +6858,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         payload: {
           id: sourceRunId,
           threadId: sourceThreadId,
-          ordinal: 1,
+          ordinal: 2,
           providerInstanceId,
           modelSelection,
           providerThreadId: null,
@@ -6903,6 +6915,21 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.equal(targetShell.itemCount, 0);
       assert.equal(targetShell.visibleItemCount, 4);
       assert.equal(targetProjection.visibleTurnItems.length, 4);
+
+      const emptyFork = yield* projectionStore.getThreadProjection(emptyForkThreadId);
+      assert.deepEqual(
+        emptyFork.visibleTurnItems.map((row) =>
+          row.item.type === "assistant_message" ? row.item.text : row.item.type,
+        ),
+        ["imported-one", "imported-two", "fork"],
+      );
+      const emptyForkPage = yield* projectionStore.getTimelinePage(emptyForkThreadId, {
+        limit: 20,
+        view: "activity",
+      });
+      assert.deepEqual(emptyForkPage.items, emptyFork.visibleTurnItems);
+      const emptyForkShell = shell.threads.find((thread) => thread.id === emptyForkThreadId);
+      assert.equal(emptyForkShell?.visibleItemCount, 3);
 
       const sideChatShell = shell.threads.find((thread) => thread.id === sideChatThreadId);
       assert.equal(sideChatShell?.visibleItemCount, 0);

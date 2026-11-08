@@ -85,16 +85,13 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
       const links = threadPullRequestsOf(moved);
       const existing = links.find((link) => threadPullRequestKeysEqual(link, key));
       if (existing === undefined || existing.source === "stack-dismissed") {
-        const link =
-          existing === undefined
-            ? {
-                ...key,
-                url: tracked.url,
-                linkedAt: DateTime.formatIso(now),
-                snapshot: null,
-                stack: null,
-              }
-            : existing;
+        const link = existing ?? {
+          ...key,
+          url: tracked.url,
+          linkedAt: DateTime.formatIso(now),
+          snapshot: null,
+          stack: null,
+        };
         yield* emit({
           type: "thread.pull-request-synced",
           threadId,

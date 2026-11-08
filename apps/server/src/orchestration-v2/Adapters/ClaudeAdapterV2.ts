@@ -5873,13 +5873,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const releaseContinuationRequest = (nativeThreadId: string, request?: symbol) =>
           Ref.update(requestedContinuations, (current) => {
-            if (
-              request === undefined
-                ? !current.has(nativeThreadId)
-                : current.get(nativeThreadId) !== request
-            ) {
-              return current;
-            }
+            const held = current.get(nativeThreadId);
+            if (held === undefined || (request !== undefined && held !== request)) return current;
             const updated = new Map(current);
             updated.delete(nativeThreadId);
             return updated;

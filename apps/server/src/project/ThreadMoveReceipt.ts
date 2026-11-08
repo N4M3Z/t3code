@@ -34,26 +34,21 @@ export function threadMoveReceiptMessage(input: ThreadMoveReceiptInput): string 
     `Moved from project ${quote(input.previousProject)} to project ${quote(input.project)}.`,
     `The next turn runs in ${input.folder}.`,
     `The thread worked in ${input.previousFolder}.`,
-    ...(left === null
-      ? []
-      : [
-          left.exists
-            ? `The folder ${input.previousFolder} stays on disk with all its files until you remove it.`
-            : "The folder no longer exists.",
-          working.length === 0
-            ? "No other thread works in it."
-            : `Still working in it: ${working.join(", ")}.`,
-        ]),
-    ...(input.members.length === 0
-      ? []
-      : [`Moved with it: ${input.members.map(quote).join(", ")}.`]),
-    ...(input.clearedBranch === null
-      ? []
-      : [
-          `Cleared the branch ${quote(input.clearedBranch)}.${pullRequest === null ? "" : ` Its pull request #${pullRequest.number} (${pullRequest.url}) stays linked.`}`,
-        ]),
+    left !== null &&
+      (left.exists
+        ? `The folder ${input.previousFolder} stays on disk with all its files until you remove it.`
+        : "The folder no longer exists."),
+    left !== null &&
+      (working.length === 0
+        ? "No other thread works in it."
+        : `Still working in it: ${working.join(", ")}.`),
+    input.members.length > 0 && `Moved with it: ${input.members.map(quote).join(", ")}.`,
+    input.clearedBranch !== null &&
+      `Cleared the branch ${quote(input.clearedBranch)}.${pullRequest === null ? "" : ` Its pull request #${pullRequest.number} (${pullRequest.url}) stays linked.`}`,
     "Open terminals keep their folder.",
-  ].join("\n");
+  ]
+    .filter((line) => typeof line === "string")
+    .join("\n");
 }
 
 export function moveReceiptTurnItem(input: {

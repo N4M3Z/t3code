@@ -17,6 +17,7 @@ import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 
 import { claudeConfigDirRefusal } from "../orchestration-v2/ClaudeSessionRelocation.ts";
 import { threadHasUnfinishedWork } from "../orchestration-v2/Orchestrator.ts";
@@ -92,13 +93,11 @@ const quote = (title: string) => `"${title}"`;
 
 const failure = (verb: string, target: string) => (cause: unknown) =>
   new ThreadMoveError({ message: `Could not ${verb} ${target}.`, cause });
+const notFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
 const kindOf = (fileSystem: FileSystem.FileSystem, target: string) =>
   fileSystem.stat(target).pipe(
     Effect.map((info) => info.type),
-    Effect.catchIf(
-      (error) => error.reason._tag === "NotFound",
-      () => Effect.succeed(null),
-    ),
+    Effect.catchIf(notFound, () => Effect.succeed(null)),
     Effect.mapError(failure("read", target)),
   );
 
@@ -151,10 +150,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     const known = realPaths.get(target);
     if (known !== undefined) return known;
     const real = yield* fileSystem.realPath(target).pipe(
-      Effect.catchIf(
-        (error) => error.reason._tag === "NotFound",
-        () => Effect.succeed(path.resolve(target)),
-      ),
+      Effect.catchIf(notFound, () => Effect.succeed(path.resolve(target))),
       Effect.mapError(failure("resolve", target)),
     );
     realPaths.set(target, real);
@@ -272,9 +268,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     const configDirRefusal = isClaude
       ? claudeConfigDirRefusal(path, instance.environment)
       : undefined;
-    const checks: ReadonlyArray<
-      readonly [boolean | (() => Effect.Effect<boolean, ThreadMoveError>), string]
-    > = [
+    const checks = [
       [
         () => Effect.map(probes.threadRecords(member.id), threadHasUnfinishedWork),
         `${title} is still working. Try again when the turn ends.`,
@@ -311,7 +305,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
         `${title} uses ${member.providerInstanceId}, which the destination project disables.`,
       ],
       [configDirRefusal !== undefined, `${title} uses a Claude instance whose ${configDirRefusal}`],
-    ];
+    ] as const;
     for (const [when, reason] of checks) {
       if (typeof when === "boolean" ? when : yield* when()) {
         return refused(reason, { thread: namedThread(member) });
@@ -322,9 +316,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     return {
       _tag: "needs-project" as const,
       folder: destination.folder,
-      ...(destination.nestedIn === undefined
-        ? {}
-        : { nestedIn: namedProject(destination.nestedIn) }),
+      ...(destination.nestedIn && { nestedIn: namedProject(destination.nestedIn) }),
     };
   }
   const from = thread.worktreePath;
@@ -333,18 +325,14 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
   const atFrom = projectsAt(threadFolder);
   const project = atFrom.find((candidate) => candidate.archivedAt == null) ?? atFrom[0];
   const memberIds = new Set(members.map((member) => member.id));
-  const otherThreads: Array<ReturnType<typeof namedThread>> = [];
-  for (const other of threads) {
+  const otherThreads = (yield* Effect.filter(threads, (other) => {
     const folder = folderOf(other);
-    if (
-      folder !== undefined &&
-      !memberIds.has(other.id) &&
-      !(project !== undefined && other.worktreePath === null && other.projectId === project.id) &&
-      (yield* resolve(folder)) === threadFolder
-    ) {
-      otherThreads.push(namedThread(other));
-    }
-  }
+    return folder === undefined ||
+      memberIds.has(other.id) ||
+      (project !== undefined && other.worktreePath === null && other.projectId === project.id)
+      ? Effect.succeed(false)
+      : Effect.map(resolve(folder), (resolved) => resolved === threadFolder);
+  })).map(namedThread);
   const leaving: Omit<Confirm, "_tag"> = {
     from,
     to:

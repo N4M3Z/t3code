@@ -3,7 +3,6 @@ import {
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ThreadShell,
   type Project,
-  type ProjectId,
   ProviderDriverKind,
   type ProviderInstanceId,
   resolveProjectProviderInstanceEnabled,
@@ -41,10 +40,7 @@ export interface ThreadMoveProviderInstance {
 }
 
 export interface ThreadMoveProbes {
-  readonly fileSystem: Pick<
-    FileSystem.FileSystem,
-    "exists" | "readFileString" | "realPath" | "stat"
-  >;
+  readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
   readonly threadRecords: (
     threadId: ThreadId,
@@ -63,7 +59,7 @@ export type ThreadMoveDestination =
   | { readonly _tag: "scratch"; readonly project: Project | undefined };
 
 export type ThreadMoveDecision =
-  | Extract<ThreadMoveResult, { _tag: "moved" | "needs-project" | "confirm" | "refused" }>
+  | ThreadMoveResult
   | {
       readonly _tag: "move";
       readonly destination: ThreadMoveDestination;
@@ -98,16 +94,16 @@ const namedProject = (project: Project) => ({ projectId: project.id, title: proj
 const namedThread = (thread: ThreadMoveShell) => ({ threadId: thread.id, title: thread.title });
 const quote = (title: string) => `"${title}"`;
 
-const unreadable = (target: string) => (cause: unknown) =>
-  new ThreadMoveError({ message: `Could not read ${target}.`, cause });
-const kindOf = (fileSystem: ThreadMoveProbes["fileSystem"], target: string) =>
+const failure = (verb: string, target: string) => (cause: unknown) =>
+  new ThreadMoveError({ message: `Could not ${verb} ${target}.`, cause });
+const kindOf = (fileSystem: FileSystem.FileSystem, target: string) =>
   fileSystem.stat(target).pipe(
     Effect.map((info) => info.type),
     Effect.catchIf(
       (error) => error.reason._tag === "NotFound",
       () => Effect.succeed(null),
     ),
-    Effect.mapError(unreadable(target)),
+    Effect.mapError(failure("read", target)),
   );
 
 const matchProject = (folder: string, matches: ReadonlyArray<Project>) => {
@@ -145,74 +141,12 @@ export function collectMoveSet(
   return members;
 }
 
-const checkMember = Effect.fn("ThreadMoveDestination.checkMember")(function* (
-  member: ThreadMoveShell,
-  memberFolder: string | undefined,
-  threadFolder: string,
-  destinationProjectId: ProjectId | null,
-  input: Pick<ThreadMoveDecisionInput, "providerInstances" | "settings">,
-  probes: ThreadMoveProbes,
-  resolve: (target: string) => Effect.Effect<string, ThreadMoveError>,
-) {
-  const title = quote(member.title);
-  const name = (reason: string) => refused(reason, { thread: namedThread(member) });
-  if (threadHasUnfinishedWork(yield* probes.threadRecords(member.id))) {
-    return name(`${title} is still working. Try again when the turn ends.`);
-  }
-  if (
-    yield* probes.hasBackgroundWork(member.id).pipe(Effect.catchCause(() => Effect.succeed(true)))
-  ) {
-    return name(`${title} still has background work running.`);
-  }
-  const folder = memberFolder === undefined ? undefined : yield* resolve(memberFolder);
-  if (folder !== threadFolder) {
-    return name(
-      `${title} works in another folder${memberFolder === undefined ? "" : `, ${memberFolder}`}.`,
-    );
-  }
-  const instance = input.providerInstances.get(member.providerInstanceId);
-  if (instance?.capabilities.sessions.supportsFolderMove !== true) {
-    return name(
-      `${title} uses ${instance?.driver ?? member.providerInstanceId}, which does not support a folder move.`,
-    );
-  }
-  const version = instance.version;
-  if (
-    instance.driver === CLAUDE_DRIVER &&
-    (version === null ||
-      parseSemver(version) === null ||
-      compareSemverVersions(version, CLAUDE_MIN_VERSION) < 0)
-  ) {
-    return name(
-      `${title} uses Claude Code ${version ?? "of unknown version"}, and a folder move needs ${CLAUDE_MIN_VERSION} or newer. Refresh the providers to check again.`,
-    );
-  }
-  if (
-    !resolveProjectProviderInstanceEnabled(
-      input.settings,
-      destinationProjectId,
-      member.providerInstanceId,
-    )
-  ) {
-    return name(
-      `${title} uses ${member.providerInstanceId}, which the destination project disables.`,
-    );
-  }
-  const configDirRefusal =
-    instance.driver === CLAUDE_DRIVER
-      ? claudeConfigDirRefusal(probes.path, instance.environment)
-      : undefined;
-  if (configDirRefusal !== undefined) {
-    return name(`${title} uses a Claude instance whose ${configDirRefusal}`);
-  }
-  return undefined;
-});
-
 export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMove")(function* (
   input: ThreadMoveDecisionInput,
   probes: ThreadMoveProbes,
 ) {
   const { fileSystem, path } = probes;
+  const { request } = input;
   const threads = input.threads.filter((thread) => thread.deletedAt === null);
   const projects = input.projects.filter((project) => project.deletedAt === null);
   const folderOf = (shell: ThreadMoveShell) =>
@@ -227,15 +161,13 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
         (error) => error.reason._tag === "NotFound",
         () => Effect.succeed(path.resolve(target)),
       ),
-      Effect.mapError(
-        (cause) => new ThreadMoveError({ message: `Could not resolve ${target}.`, cause }),
-      ),
+      Effect.mapError(failure("resolve", target)),
     );
     realPaths.set(target, real);
     return real;
   });
 
-  const thread = threads.find((candidate) => candidate.id === input.request.threadId);
+  const thread = threads.find((candidate) => candidate.id === request.threadId);
   if (thread === undefined) return refused("Thread not found.");
   if (!isListedThreadLineage(thread.lineage)) {
     const parent = threads.find((candidate) => candidate.id === thread.lineage.parentThreadId);
@@ -259,7 +191,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     projectsAt(scratchRoot).some((project) => project.id === thread.projectId);
 
   const destination = yield* Effect.gen(function* () {
-    if (input.request.destination === null) {
+    if (request.destination === null) {
       if (scratchRoot === undefined) {
         return refused("Scratch folders are unavailable on this server.");
       }
@@ -269,10 +201,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
         ? project
         : { _tag: "scratch" as const, project };
     }
-    const target = path.resolve(
-      currentFolder,
-      expandHomePath(input.request.destination, input.home),
-    );
+    const target = path.resolve(currentFolder, expandHomePath(request.destination, input.home));
     const folder = yield* fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => null));
     if (folder === null || (yield* kindOf(fileSystem, folder)) !== "Directory") {
       return refused(`${target} is not an existing folder.`);
@@ -315,7 +244,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
       if ((yield* kindOf(fileSystem, gitPath)) === "File") {
         const pointer = yield* fileSystem
           .readFileString(gitPath)
-          .pipe(Effect.mapError(unreadable(gitPath)));
+          .pipe(Effect.mapError(failure("read", gitPath)));
         const gitdir = /^\s*gitdir:\s*(.+?)\s*$/m.exec(pointer)?.[1];
         if (
           gitdir !== undefined &&
@@ -341,18 +270,60 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
   const destinationProjectId =
     destination._tag === "new-project" ? null : (destination.project?.id ?? null);
   for (const member of members) {
-    const refusal = yield* checkMember(
-      member,
-      folderOf(member),
-      threadFolder,
-      destinationProjectId,
-      input,
-      probes,
-      resolve,
-    );
-    if (refusal !== undefined) return refusal;
+    const title = quote(member.title);
+    const name = (reason: string) => refused(reason, { thread: namedThread(member) });
+    if (threadHasUnfinishedWork(yield* probes.threadRecords(member.id))) {
+      return name(`${title} is still working. Try again when the turn ends.`);
+    }
+    if (
+      yield* probes.hasBackgroundWork(member.id).pipe(Effect.catchCause(() => Effect.succeed(true)))
+    ) {
+      return name(`${title} still has background work running.`);
+    }
+    const memberFolder = folderOf(member);
+    const folder = memberFolder === undefined ? undefined : yield* resolve(memberFolder);
+    if (folder !== threadFolder) {
+      return name(
+        `${title} works in another folder${memberFolder === undefined ? "" : `, ${memberFolder}`}.`,
+      );
+    }
+    const instance = input.providerInstances.get(member.providerInstanceId);
+    if (instance?.capabilities.sessions.supportsFolderMove !== true) {
+      return name(
+        `${title} uses ${instance?.driver ?? member.providerInstanceId}, which does not support a folder move.`,
+      );
+    }
+    const version = instance.version;
+    if (
+      instance.driver === CLAUDE_DRIVER &&
+      (version === null ||
+        parseSemver(version) === null ||
+        compareSemverVersions(version, CLAUDE_MIN_VERSION) < 0)
+    ) {
+      return name(
+        `${title} uses Claude Code ${version ?? "of unknown version"}, and a folder move needs ${CLAUDE_MIN_VERSION} or newer. Refresh the providers to check again.`,
+      );
+    }
+    if (
+      !resolveProjectProviderInstanceEnabled(
+        input.settings,
+        destinationProjectId,
+        member.providerInstanceId,
+      )
+    ) {
+      return name(
+        `${title} uses ${member.providerInstanceId}, which the destination project disables.`,
+      );
+    }
+    const configDirRefusal =
+      instance.driver === CLAUDE_DRIVER
+        ? claudeConfigDirRefusal(path, instance.environment)
+        : undefined;
+    if (configDirRefusal !== undefined) {
+      return name(`${title} uses a Claude instance whose ${configDirRefusal}`);
+    }
   }
-  if (destination._tag === "new-project" && input.request.addProject !== true) {
+  if (destination._tag === "new-project" && request.addProject !== true) {
     return {
       _tag: "needs-project" as const,
       folder: destination.folder,
@@ -371,13 +342,13 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
   for (const other of threads) {
     const folder = folderOf(other);
     if (
-      folder === undefined ||
-      memberIds.has(other.id) ||
-      (project !== undefined && other.worktreePath === null && other.projectId === project.id)
+      folder !== undefined &&
+      !memberIds.has(other.id) &&
+      !(project !== undefined && other.worktreePath === null && other.projectId === project.id) &&
+      (yield* resolve(folder)) === threadFolder
     ) {
-      continue;
+      otherThreads.push(namedThread(other));
     }
-    if ((yield* resolve(folder)) === threadFolder) otherThreads.push(namedThread(other));
   }
   const leaving: Omit<Confirm, "_tag"> = {
     from,
@@ -399,7 +370,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     ...(project === undefined ? {} : { project: namedProject(project) }),
     otherThreads,
   };
-  return input.request.confirm === true
+  return request.confirm === true
     ? { _tag: "move" as const, destination, members, leaving }
     : { _tag: "confirm" as const, ...leaving };
 });

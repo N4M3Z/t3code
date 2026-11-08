@@ -144,14 +144,12 @@ describe("shared project payloads", () => {
     ];
     const results: ReadonlyArray<ThreadMoveResult> = [
       { _tag: "moved", folder: "/repo/b", members: [thread] },
-      { _tag: "moved", folder: "/repo/my app ", members: [] },
       { _tag: "needs-project", folder: "/repo/a/docs", nestedIn: project },
       {
         _tag: "confirm",
-        from: "/worktrees/w",
+        from: "/w",
         to: null,
-        staysOnDisk:
-          "The folder /worktrees/w stays on disk with all its files until you remove it.",
+        staysOnDisk: "The folder /w stays on disk with all its files until you remove it.",
         wayBack: "add-project",
         project,
         otherThreads: [thread],

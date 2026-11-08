@@ -22,41 +22,35 @@ export interface ThreadMoveReceiptInput {
 
 export function threadMoveReceiptMessage(input: ThreadMoveReceiptInput): string {
   const left = input.leftFolder;
-  const working =
-    left === null
-      ? []
-      : [
-          ...(left.project === null ? [] : [`project ${quote(left.project)}`]),
-          ...left.otherThreads.map(quote),
-        ];
-  return [
+  const lines = [
     `Moved from project ${quote(input.previousProject)} to project ${quote(input.project)}.`,
     `The next turn runs in ${input.folder}.`,
     `The thread worked in ${input.previousFolder}.`,
-    ...(left === null
-      ? []
-      : [
-          left.exists
-            ? `The folder ${input.previousFolder} stays on disk with all its files until you remove it.`
-            : "The folder no longer exists.",
-          working.length === 0
-            ? "No other thread works in it."
-            : `Still working in it: ${working.join(", ")}.`,
-        ]),
-    ...(input.members.length === 0
-      ? []
-      : [`Moved with it: ${input.members.map(quote).join(", ")}.`]),
-    ...(input.clearedBranch === null
-      ? []
-      : [
-          `Cleared the branch ${quote(input.clearedBranch)}.${
-            input.pullRequest === null
-              ? ""
-              : ` Its pull request #${input.pullRequest.number} (${input.pullRequest.url}) stays linked.`
-          }`,
-        ]),
-    "Open terminals keep their folder.",
-  ].join("\n");
+  ];
+  if (left !== null) {
+    const working = [
+      ...(left.project === null ? [] : [`project ${quote(left.project)}`]),
+      ...left.otherThreads.map(quote),
+    ];
+    lines.push(
+      left.exists
+        ? `The folder ${input.previousFolder} stays on disk with all its files until you remove it.`
+        : "The folder no longer exists.",
+      working.length === 0
+        ? "No other thread works in it."
+        : `Still working in it: ${working.join(", ")}.`,
+    );
+  }
+  if (input.members.length > 0)
+    lines.push(`Moved with it: ${input.members.map(quote).join(", ")}.`);
+  if (input.clearedBranch !== null) {
+    const pullRequest = input.pullRequest;
+    lines.push(
+      `Cleared the branch ${quote(input.clearedBranch)}.${pullRequest === null ? "" : ` Its pull request #${pullRequest.number} (${pullRequest.url}) stays linked.`}`,
+    );
+  }
+  lines.push("Open terminals keep their folder.");
+  return lines.join("\n");
 }
 
 export function memberMoveNoticeMessage(input: {

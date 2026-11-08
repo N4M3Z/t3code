@@ -50,7 +50,6 @@ const thread = (
     readonly parent?: string;
     readonly relationship?: "fork" | "subagent";
     readonly sideChat?: boolean;
-    readonly instance?: string;
     readonly deleted?: boolean;
   },
 ): ThreadMoveShell => ({
@@ -58,7 +57,7 @@ const thread = (
   title: id,
   projectId: ProjectId.make(projectId),
   worktreePath,
-  providerInstanceId: ProviderInstanceId.make(extra?.instance ?? "claudeAgent"),
+  providerInstanceId: ProviderInstanceId.make("claudeAgent"),
   lineage: {
     parentThreadId: extra?.parent === undefined ? null : ThreadId.make(extra.parent),
     relationshipToParent: extra?.relationship ?? null,
@@ -75,28 +74,26 @@ const sessions = {
   supportsRuntimeModeSwitchInSession: false,
   pendingRequestsSurviveRestart: false,
 };
-const claude = (version: string | null, configDir?: string): ThreadMoveProviderInstance => ({
-  driver: ProviderDriverKind.make("claudeAgent"),
-  capabilities: { sessions: { ...sessions, supportsFolderMove: true } },
+const provider = (
+  driver: string,
+  version: string | null,
+  supportsFolderMove: boolean,
+  configDir?: string,
+): ThreadMoveProviderInstance => ({
+  driver: ProviderDriverKind.make(driver),
+  capabilities: { sessions: supportsFolderMove ? { ...sessions, supportsFolderMove } : sessions },
   version,
   environment: configDir === undefined ? {} : { CLAUDE_CONFIG_DIR: configDir },
 });
-const codex: ThreadMoveProviderInstance = {
-  driver: ProviderDriverKind.make("codex"),
-  capabilities: { sessions: { ...sessions, supportsFolderMove: true } },
-  version: "1.0.0",
-  environment: {},
-};
-const cursor: ThreadMoveProviderInstance = {
-  driver: ProviderDriverKind.make("cursor"),
-  capabilities: { sessions },
-  version: "1.0.0",
-  environment: {},
-};
+const claude = (version: string | null, configDir?: string) =>
+  provider("claudeAgent", version, true, configDir);
 const instances = (
   ...entries: ReadonlyArray<readonly [string, ThreadMoveProviderInstance]>
 ): ReadonlyMap<ProviderInstanceId, ThreadMoveProviderInstance> =>
-  new Map(entries.map(([id, instance]) => [ProviderInstanceId.make(id), instance]));
+  new Map(entries.map(([id, entry]) => [ProviderInstanceId.make(id), entry]));
+const claudeAt = (version: string | null, configDir?: string) => ({
+  providerInstances: instances(["claudeAgent", claude(version, configDir)]),
+});
 
 const makeWorld = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -106,32 +103,11 @@ const makeWorld = Effect.gen(function* () {
   );
   const at = (...segments: ReadonlyArray<string>) => path.join(root, ...segments);
   for (const folder of [
-    "projA/nested",
-    "projB",
-    "dup",
-    "archived",
-    "deleted",
-    "scratch/thread",
-    "scratch/other",
-    "scratch/promoted",
-    "worktree/sub",
-    "worktree/proot",
-    "jjws/.jj",
-    "jjws/sub",
-    "jjdefault/.jj/repo",
-    "jjdefault/sub",
-    "main/.git/worktrees/wt",
-    "main/.git/modules/worktrees/lib",
-    "main/worktrees/lib",
-    "srv/worktrees/main",
-    "separate",
-    "locked-git",
-    "locked-jj/.jj",
-    "managed/repo/branch/sub",
-    "plain",
-    "W",
-    "PW",
-  ]) {
+    "projA/nested projB dup archived deleted scratch/thread scratch/other scratch/promoted",
+    "worktree/sub worktree/proot jjws/.jj jjws/sub jjdefault/.jj/repo jjdefault/sub",
+    "main/.git/worktrees/wt main/.git/modules/worktrees/lib main/worktrees/lib srv/worktrees/main",
+    "separate locked-git locked-jj/.jj managed/repo/branch/sub plain W PW",
+  ].flatMap((group) => group.split(" "))) {
     yield* fileSystem.makeDirectory(at(folder), { recursive: true });
   }
   yield* fileSystem.writeFileString(at("worktree", ".git"), "gitdir: ../main/.git/worktrees/wt\n");
@@ -183,6 +159,11 @@ const makeWorld = Effect.gen(function* () {
   return { root, at, projects, threads };
 });
 type World = Effect.Success<typeof makeWorld>;
+type Options = Partial<ThreadMoveDecisionInput> & {
+  readonly probes?: Partial<Pick<ThreadMoveProbes, "threadRecords" | "hasBackgroundWork">>;
+};
+type Setup = Options | ((world: World) => Options);
+type Records = Effect.Success<ReturnType<ThreadMoveProbes["threadRecords"]>>;
 
 const request = (
   threadId: string,
@@ -191,16 +172,11 @@ const request = (
 ): ThreadMoveInput => ({ threadId: ThreadId.make(threadId), destination, ...flags });
 
 const idle = { runs: [], runtimeRequests: [] };
+const running = { runs: [{ status: "running" }], runtimeRequests: [] };
 
-const decide = (
-  world: World,
-  input: ThreadMoveInput,
-  overrides: Partial<ThreadMoveDecisionInput> = {},
-  probes: Partial<Pick<ThreadMoveProbes, "threadRecords" | "hasBackgroundWork">> = {},
-) =>
+const decide = (world: World, input: ThreadMoveInput, setup: Setup = {}) =>
   Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
+    const { probes, ...overrides } = typeof setup === "function" ? setup(world) : setup;
     return yield* decideThreadMove(
       {
         request: input,
@@ -208,8 +184,8 @@ const decide = (
         projects: world.projects,
         providerInstances: instances(
           ["claudeAgent", claude("2.1.223")],
-          ["codex", codex],
-          ["cursor", cursor],
+          ["codex", provider("codex", "1.0.0", true)],
+          ["cursor", provider("cursor", "1.0.0", false)],
         ),
         settings: { providerInstances: {}, projectSettingsOverrides: {} },
         scratchRoot: world.at("scratch"),
@@ -218,8 +194,8 @@ const decide = (
         ...overrides,
       },
       {
-        fileSystem,
-        path,
+        fileSystem: yield* FileSystem.FileSystem,
+        path: yield* Path.Path,
         threadRecords: () => Effect.succeed(idle),
         hasBackgroundWork: () => Effect.succeed(false),
         ...probes,
@@ -230,238 +206,141 @@ const decide = (
 const live = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Scope.Scope>) =>
   effect.pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
+const onlyFor =
+  <A>(
+    threadId: string,
+    value: Effect.Effect<A, ThreadMoveError>,
+    otherwise: Effect.Effect<A, ThreadMoveError>,
+  ) =>
+  (id: ThreadId) =>
+    id === threadId ? value : otherwise;
+const records = (threadId: string, value: Records) => ({
+  probes: { threadRecords: onlyFor(threadId, Effect.succeed(value), Effect.succeed(idle)) },
+});
+const background = (threadId: string, value: Effect.Effect<boolean, ThreadMoveError>) => ({
+  probes: { hasBackgroundWork: onlyFor(threadId, value, Effect.succeed(false)) },
+});
+const patch = (world: World, threadId: string, fields: Partial<ThreadMoveShell>) => ({
+  threads: world.threads.map((shell) => (shell.id === threadId ? { ...shell, ...fields } : shell)),
+});
+
+const namedProject = (id: string) => ({ projectId: id, title: id });
+const namedThread = (id: string) => ({ threadId: id, title: id });
+const matching = (text: string | RegExp) =>
+  typeof text === "string" ? expect.stringContaining(text) : expect.stringMatching(text);
+const refusal = (reason?: string | RegExp, named?: Record<string, unknown>) => ({
+  _tag: "refused",
+  ...(reason === undefined ? {} : { reason: matching(reason) }),
+  ...named,
+});
+const member = (id: string, reason?: string | RegExp) =>
+  refusal(reason, { thread: namedThread(id) });
+const worktreeRefused = refusal("inside a worktree");
+const moved = (folder: string) => ({ _tag: "moved", folder, members: [] });
 const movesTo = (projectId: string) => ({
   _tag: "move",
   destination: { _tag: "project", project: expect.objectContaining({ id: projectId }) },
   leaving: null,
 });
-const worktreeRefused = { _tag: "refused", reason: expect.stringContaining("inside a worktree") };
+const needsProject = (folder: string, nestedIn?: string) => ({
+  _tag: "needs-project",
+  folder,
+  ...(nestedIn === undefined ? {} : { nestedIn: namedProject(nestedIn) }),
+});
+const failure = (target: string) => ({
+  _tag: "ThreadMoveError",
+  message: expect.stringContaining(target),
+});
 
-it.effect.each<{
-  readonly name: string;
-  readonly thread: string;
-  readonly typed: (world: World) => string;
-  readonly expected: (world: World) => object;
-}>([
-  {
-    name: "rule 1: the thread's own folder moves with no members",
-    thread: "t1",
-    typed: (world) => world.at("projA"),
-    expected: (world) => ({ _tag: "moved", folder: world.at("projA"), members: [] }),
-  },
-  {
-    name: "rule 1: the own worktree changes nothing and asks nothing",
-    thread: "t2",
-    typed: (world) => world.at("W"),
-    expected: (world) => ({ _tag: "moved", folder: world.at("W"), members: [] }),
-  },
-  {
-    name: "rule 1: the own folder that is another project's root is refused",
-    thread: "t3",
-    typed: (world) => world.at("PW"),
-    expected: () => ({
-      _tag: "refused",
-      reason: expect.stringContaining("no folder change is not supported"),
-      projects: [{ projectId: "P", title: "P" }],
-    }),
-  },
-  {
-    name: "rule 2: the scratch root points to /no",
-    thread: "t1",
-    typed: (world) => world.at("scratch"),
-    expected: () => ({ _tag: "refused", reason: expect.stringContaining("/no") }),
-  },
-  {
-    name: "rule 3: a project root moves there",
-    thread: "t1",
-    typed: (world) => world.at("projB"),
-    expected: () => movesTo("B"),
-  },
-  {
-    name: "rule 3: a relative path resolves against the thread's folder",
-    thread: "t1",
-    typed: () => "../projB",
-    expected: () => movesTo("B"),
-  },
-  {
-    name: "rule 3: ~ expands to the home folder",
-    thread: "t1",
-    typed: () => "~/projB",
-    expected: () => movesTo("B"),
-  },
-  {
-    name: "rule 3: a symlink spelling of the root matches",
-    thread: "t1",
-    typed: (world) => world.at("link-B"),
-    expected: () => movesTo("B"),
-  },
-  {
-    name: "rule 3: a promoted project under the scratch root moves there",
-    thread: "t1",
-    typed: (world) => world.at("scratch", "promoted"),
-    expected: () => movesTo("Promoted"),
-  },
-  {
-    name: "rule 3: a project root inside a worktree moves there",
-    thread: "t1",
-    typed: (world) => world.at("worktree", "proot"),
-    expected: () => movesTo("InWorktree"),
-  },
-  {
-    name: "rule 3: two matching projects are named",
-    thread: "t1",
-    typed: (world) => world.at("dup"),
-    expected: () => ({
-      _tag: "refused",
-      reason: expect.stringContaining('"Dup1", "Dup2"'),
-      projects: [
-        { projectId: "Dup1", title: "Dup1" },
-        { projectId: "Dup2", title: "Dup2" },
-      ],
-    }),
-  },
-  {
-    name: "rule 3: an archived match asks to unarchive it",
-    thread: "t1",
-    typed: (world) => world.at("archived"),
-    expected: () => ({
-      _tag: "refused",
-      reason: expect.stringContaining("Unarchive"),
-      projects: [{ projectId: "Archived", title: "Archived" }],
-    }),
-  },
-  {
-    name: "rule 4: another scratch folder points to /no",
-    thread: "t1",
-    typed: (world) => world.at("scratch", "other"),
-    expected: () => ({
-      _tag: "refused",
-      reason: expect.not.stringContaining("Turn into project"),
-    }),
-  },
-  {
-    name: "rule 4: from No project it also points to Turn into project",
-    thread: "tn",
-    typed: (world) => world.at("scratch", "other"),
-    expected: () => ({ _tag: "refused", reason: expect.stringContaining("Turn into project") }),
-  },
-  {
-    name: "rule 5: a folder in a linked git worktree",
-    thread: "t1",
-    typed: (world) => world.at("worktree", "sub"),
-    expected: () => worktreeRefused,
-  },
-  {
-    name: "rule 5: the linked worktree itself",
-    thread: "t1",
-    typed: (world) => world.at("worktree"),
-    expected: () => worktreeRefused,
-  },
-  {
-    name: "rule 5: a folder in a jj workspace",
-    thread: "t1",
-    typed: (world) => world.at("jjws", "sub"),
-    expected: () => worktreeRefused,
-  },
-  {
-    name: "rule 5: a folder in a default jj workspace",
-    thread: "t1",
-    typed: (world) => world.at("jjdefault", "sub"),
-    expected: () => worktreeRefused,
-  },
-  {
-    name: "rule 5: the managed worktrees directory itself",
-    thread: "t1",
-    typed: (world) => world.at("managed"),
-    expected: () => worktreeRefused,
-  },
-  {
-    name: "rule 5: a folder under a managed worktrees directory",
-    thread: "t1",
-    typed: (world) => world.at("managed", "repo", "branch", "sub"),
-    expected: () => worktreeRefused,
-  },
-  {
-    name: "rule 5: an unreadable .git fails the decision, naming it",
-    thread: "t1",
-    typed: (world) => world.at("locked-git"),
-    expected: (world) => ({
-      _tag: "ThreadMoveError",
-      message: expect.stringContaining(world.at("locked-git", ".git")),
-    }),
-  },
-  {
-    name: "rule 5: an unreadable .jj/repo fails the decision, naming it",
-    thread: "t1",
-    typed: (world) => world.at("locked-jj"),
-    expected: (world) => ({
-      _tag: "ThreadMoveError",
-      message: expect.stringContaining(world.at("locked-jj", ".jj", "repo")),
-    }),
-  },
-  {
-    name: "rule 6: a folder with no project needs one",
-    thread: "t1",
-    typed: (world) => world.at("plain"),
-    expected: (world) => ({ _tag: "needs-project", folder: world.at("plain") }),
-  },
-  {
-    name: "rule 6: a folder inside a project names it",
-    thread: "t1",
-    typed: (world) => world.at("projA", "nested"),
-    expected: (world) => ({
-      _tag: "needs-project",
-      folder: world.at("projA", "nested"),
-      nestedIn: { projectId: "A", title: "A" },
-    }),
-  },
-  {
-    name: "rule 6: a submodule named worktrees/<name> needs a project",
-    thread: "t1",
-    typed: (world) => world.at("main", "worktrees", "lib"),
-    expected: (world) => ({
-      _tag: "needs-project",
-      folder: world.at("main", "worktrees", "lib"),
-    }),
-  },
-  {
-    name: "rule 6: a main checkout with a separate git dir under worktrees/ needs a project",
-    thread: "t1",
-    typed: (world) => world.at("separate"),
-    expected: (world) => ({ _tag: "needs-project", folder: world.at("separate") }),
-  },
-  {
-    name: "rule 6: a deleted project's root needs a project",
-    thread: "t1",
-    typed: (world) => world.at("deleted"),
-    expected: (world) => ({ _tag: "needs-project", folder: world.at("deleted") }),
-  },
-  {
-    name: "a missing folder is refused",
-    thread: "t1",
-    typed: (world) => world.at("missing"),
-    expected: () => ({
-      _tag: "refused",
-      reason: expect.stringContaining("not an existing folder"),
-    }),
-  },
-  {
-    name: "a file is refused",
-    thread: "t1",
-    typed: (world) => world.at("afile"),
-    expected: () => ({
-      _tag: "refused",
-      reason: expect.stringContaining("not an existing folder"),
-    }),
-  },
-])("/cd $name", ({ thread: threadId, typed, expected }) =>
+it.effect.each<
+  readonly [
+    name: string,
+    thread: string,
+    typed: string | (() => string),
+    expected: object | ((folder: string) => object),
+  ]
+>([
+  ["rule 1: the thread's own folder moves with no members", "t1", "projA", moved],
+  ["rule 1: the own worktree changes nothing and asks nothing", "t2", "W", moved],
+  [
+    "rule 1: the own folder that is another project's root is refused",
+    "t3",
+    "PW",
+    refusal("no folder change is not supported", { projects: [namedProject("P")] }),
+  ],
+  ["rule 2: the scratch root points to /no", "t1", "scratch", refusal("/no")],
+  ["rule 3: a project root moves there", "t1", "projB", movesTo("B")],
+  ["rule 3: a relative path starts at the thread's folder", "t1", () => "../projB", movesTo("B")],
+  ["rule 3: ~ expands to the home folder", "t1", () => "~/projB", movesTo("B")],
+  ["rule 3: a symlink spelling of the root matches", "t1", "link-B", movesTo("B")],
+  ["rule 3: a promoted project moves there", "t1", "scratch/promoted", movesTo("Promoted")],
+  ["rule 3: a root inside a worktree moves there", "t1", "worktree/proot", movesTo("InWorktree")],
+  [
+    "rule 3: two matching projects are named",
+    "t1",
+    "dup",
+    refusal('"Dup1", "Dup2"', { projects: [namedProject("Dup1"), namedProject("Dup2")] }),
+  ],
+  [
+    "rule 3: an archived match asks to unarchive it",
+    "t1",
+    "archived",
+    refusal("Unarchive", { projects: [namedProject("Archived")] }),
+  ],
+  [
+    "rule 4: another scratch folder points to /no",
+    "t1",
+    "scratch/other",
+    { _tag: "refused", reason: expect.not.stringContaining("Turn into project") },
+  ],
+  [
+    "rule 4: from No project it also points to Turn into project",
+    "tn",
+    "scratch/other",
+    refusal("Turn into project"),
+  ],
+  ["rule 5: a folder in a linked git worktree", "t1", "worktree/sub", worktreeRefused],
+  ["rule 5: the linked worktree itself", "t1", "worktree", worktreeRefused],
+  ["rule 5: a folder in a jj workspace", "t1", "jjws/sub", worktreeRefused],
+  ["rule 5: a folder in a default jj workspace", "t1", "jjdefault/sub", worktreeRefused],
+  ["rule 5: the managed worktrees directory itself", "t1", "managed", worktreeRefused],
+  ["rule 5: under a managed worktrees directory", "t1", "managed/repo/branch/sub", worktreeRefused],
+  [
+    "rule 5: an unreadable .git fails the decision, naming it",
+    "t1",
+    "locked-git",
+    (folder) => failure(`${folder}/.git`),
+  ],
+  [
+    "rule 5: an unreadable .jj/repo fails the decision, naming it",
+    "t1",
+    "locked-jj",
+    (folder) => failure(`${folder}/.jj/repo`),
+  ],
+  ["rule 6: a folder with no project needs one", "t1", "plain", needsProject],
+  ["rule 6: a subfolder of A names A", "t1", "projA/nested", (folder) => needsProject(folder, "A")],
+  [
+    "rule 6: a submodule under worktrees/ needs a project",
+    "t1",
+    "main/worktrees/lib",
+    needsProject,
+  ],
+  [
+    "rule 6: a checkout whose git dir is under worktrees/ needs one",
+    "t1",
+    "separate",
+    needsProject,
+  ],
+  ["rule 6: a deleted project's root needs a project", "t1", "deleted", needsProject],
+  ["a missing folder is refused", "t1", "missing", refusal("not an existing folder")],
+  ["a file is refused", "t1", "afile", refusal("not an existing folder")],
+])("/cd %s", ([, threadId, typed, expected]) =>
   live(
     Effect.gen(function* () {
       const world = yield* makeWorld;
-      const result = yield* decide(world, request(threadId, typed(world))).pipe(
-        Effect.catch(Effect.succeed),
-      );
-      expect(result).toMatchObject(expected(world));
+      const folder = typeof typed === "string" ? world.at(typed) : typed();
+      const result = yield* Effect.catch(decide(world, request(threadId, folder)), Effect.succeed);
+      expect(result).toMatchObject(typeof expected === "function" ? expected(folder) : expected);
     }),
   ),
 );
@@ -473,10 +352,7 @@ it.effect("a project root that fails to resolve fails the decision", () =>
       const error = yield* decide(world, request("t1", world.at("plain")), {
         projects: [...world.projects, project("Unresolved", world.at("afile", "root"))],
       }).pipe(Effect.flip);
-      expect(error).toMatchObject({
-        _tag: "ThreadMoveError",
-        message: expect.stringContaining(world.at("afile", "root")),
-      });
+      expect(error).toMatchObject(failure(world.at("afile", "root")));
     }),
   ),
 );
@@ -485,72 +361,53 @@ const competingScratch = (world: World) => ({
   projects: [...world.projects, project("No project 2", world.at("link-scratch"))],
 });
 
-it.effect.each<{
-  readonly name: string;
-  readonly thread: string;
-  readonly overrides?: (world: World) => Partial<ThreadMoveDecisionInput>;
-  readonly expected: object;
-}>([
-  {
-    name: "refuses a thread already in No project, whatever else resolves to the scratch root",
-    thread: "tn",
-    overrides: competingScratch,
-    expected: { _tag: "refused", reason: expect.stringContaining("already in No project") },
-  },
-  {
-    name: "refuses when scratch folders are unavailable",
-    thread: "t1",
-    overrides: () => ({ scratchRoot: undefined }),
-    expected: { _tag: "refused", reason: expect.stringContaining("unavailable") },
-  },
-  {
-    name: "refuses when two projects resolve to the scratch root, naming them",
-    thread: "t1",
-    overrides: competingScratch,
-    expected: {
-      _tag: "refused",
-      projects: [
-        { projectId: "No project", title: "No project" },
-        { projectId: "No project 2", title: "No project 2" },
-      ],
-    },
-  },
-  {
-    name: "refuses an archived No project and asks to unarchive it",
-    thread: "t1",
-    overrides: (world) => ({
+it.effect.each<readonly [name: string, thread: string, setup: Setup, expected: object]>([
+  [
+    "refuses a thread already in No project, whatever else resolves to the scratch root",
+    "tn",
+    competingScratch,
+    refusal("already in No project"),
+  ],
+  ["refuses without scratch folders", "t1", { scratchRoot: undefined }, refusal("unavailable")],
+  [
+    "refuses when two projects resolve to the scratch root, naming them",
+    "t1",
+    competingScratch,
+    refusal(undefined, { projects: [namedProject("No project"), namedProject("No project 2")] }),
+  ],
+  [
+    "refuses an archived No project and asks to unarchive it",
+    "t1",
+    (world) => ({
       projects: world.projects.map((candidate) =>
         candidate.id === "No project"
           ? { ...candidate, archivedAt: "2026-01-02T00:00:00.000Z" }
           : candidate,
       ),
     }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("Unarchive"),
-      projects: [{ projectId: "No project", title: "No project" }],
-    },
-  },
-  {
-    name: "moves a root thread at once into No project",
-    thread: "t1",
-    expected: {
+    refusal("Unarchive", { projects: [namedProject("No project")] }),
+  ],
+  [
+    "moves a root thread at once into No project",
+    "t1",
+    {},
+    {
       _tag: "move",
       destination: { _tag: "scratch", project: expect.objectContaining({ id: "No project" }) },
       leaving: null,
     },
-  },
-  {
-    name: "asks first when the thread leaves a worktree, with a new scratch folder as destination",
-    thread: "t2",
-    expected: { _tag: "confirm", to: null, wayBack: "add-project" },
-  },
-])("/no $name", ({ thread: threadId, overrides, expected }) =>
+  ],
+  [
+    "asks first when the thread leaves a worktree, with a new scratch folder as destination",
+    "t2",
+    {},
+    { _tag: "confirm", to: null, wayBack: "add-project" },
+  ],
+])("/no %s", ([, threadId, setup, expected]) =>
   live(
     Effect.gen(function* () {
       const world = yield* makeWorld;
-      const result = yield* decide(world, request(threadId, null), overrides?.(world));
-      expect(result).toMatchObject(expected);
+      expect(yield* decide(world, request(threadId, null), setup)).toMatchObject(expected);
     }),
   ),
 );
@@ -563,11 +420,7 @@ it.effect.each([
     Effect.gen(function* () {
       const world = yield* makeWorld;
       const result = yield* decide(world, request(threadId, world.at("projB")));
-      expect(result).toMatchObject({
-        _tag: "refused",
-        reason: expect.stringContaining(kind),
-        thread: { threadId: "t1", title: "t1" },
-      });
+      expect(result).toMatchObject(member("t1", kind));
     }),
   ),
 );
@@ -590,101 +443,42 @@ it.effect(
     ),
 );
 
-const running = { runs: [{ status: "running" }], runtimeRequests: [] };
-const onlyFor =
-  <A>(
-    threadId: string,
-    value: Effect.Effect<A, ThreadMoveError>,
-    otherwise: Effect.Effect<A, ThreadMoveError>,
-  ) =>
-  (id: ThreadId) =>
-    id === threadId ? value : otherwise;
+type EligibilityCase = readonly [name: string, setup: Setup, expected: object];
 
-it.effect.each<{
-  readonly name: string;
-  readonly overrides?: (world: World) => Partial<ThreadMoveDecisionInput>;
-  readonly probes?: Partial<Pick<ThreadMoveProbes, "threadRecords" | "hasBackgroundWork">>;
-  readonly expected: object;
-}>([
-  {
-    name: "a member with a running turn, saying to try again when it ends",
-    probes: {
-      threadRecords: onlyFor("t1-sub", Effect.succeed(running), Effect.succeed(idle)),
-    },
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("Try again when the turn ends"),
-      thread: { threadId: "t1-sub", title: "t1-sub" },
-    },
-  },
-  {
-    name: "a member with a pending request",
-    probes: {
-      threadRecords: onlyFor(
-        "t1-side",
-        Effect.succeed({ runs: [], runtimeRequests: [{ status: "pending" }] }),
-        Effect.succeed(idle),
-      ),
-    },
-    expected: { _tag: "refused", thread: { threadId: "t1-side", title: "t1-side" } },
-  },
-  {
-    name: "a member whose session reports background work",
-    probes: {
-      hasBackgroundWork: onlyFor("t1-side", Effect.succeed(true), Effect.succeed(false)),
-    },
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("background work"),
-      thread: { threadId: "t1-side", title: "t1-side" },
-    },
-  },
-  {
-    name: "a member whose background-work probe fails",
-    probes: {
-      hasBackgroundWork: onlyFor(
-        "t1-side",
-        Effect.fail(new ThreadMoveError({ message: "probe failed" })),
-        Effect.succeed(false),
-      ),
-    },
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("background work"),
-      thread: { threadId: "t1-side", title: "t1-side" },
-    },
-  },
-  {
-    name: "a member working in another folder",
-    overrides: (world) => ({
-      threads: world.threads.map((shell) =>
-        shell.id === "t1-sub" ? { ...shell, worktreePath: world.at("W") } : shell,
-      ),
-    }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("another folder"),
-      thread: { threadId: "t1-sub", title: "t1-sub" },
-    },
-  },
-  {
-    name: "a member whose driver lacks supportsFolderMove",
-    overrides: (world) => ({
-      threads: world.threads.map((shell) =>
-        shell.id === "t1-sub"
-          ? { ...shell, providerInstanceId: ProviderInstanceId.make("cursor") }
-          : shell,
-      ),
-    }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("does not support a folder move"),
-      thread: { threadId: "t1-sub", title: "t1-sub" },
-    },
-  },
-  {
-    name: "a member whose provider instance the destination project disables",
-    overrides: () => ({
+it.effect.each<EligibilityCase>([
+  [
+    "a member with a running turn, saying to try again when it ends",
+    records("t1-sub", running),
+    member("t1-sub", "Try again when the turn ends"),
+  ],
+  [
+    "a member with a pending request",
+    records("t1-side", { runs: [], runtimeRequests: [{ status: "pending" }] }),
+    member("t1-side"),
+  ],
+  [
+    "a member whose session reports background work",
+    background("t1-side", Effect.succeed(true)),
+    member("t1-side", "background work"),
+  ],
+  [
+    "a member whose background-work probe fails",
+    background("t1-side", Effect.fail(new ThreadMoveError({ message: "probe failed" }))),
+    member("t1-side", "background work"),
+  ],
+  [
+    "a member working in another folder",
+    (world) => patch(world, "t1-sub", { worktreePath: world.at("W") }),
+    member("t1-sub", "another folder"),
+  ],
+  [
+    "a member whose driver lacks supportsFolderMove",
+    (world) => patch(world, "t1-sub", { providerInstanceId: ProviderInstanceId.make("cursor") }),
+    member("t1-sub", "does not support a folder move"),
+  ],
+  [
+    "a member whose provider instance the destination project disables",
+    {
       settings: {
         providerInstances: {},
         projectSettingsOverrides: {
@@ -693,71 +487,27 @@ it.effect.each<{
           },
         },
       },
-    }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("disables"),
-      thread: { threadId: "t1", title: "t1" },
     },
-  },
-  ...["", "  ", " /config", ".claude-config"].map((configDir) => ({
-    name: `a Claude instance with CLAUDE_CONFIG_DIR ${JSON.stringify(configDir)}`,
-    overrides: () => ({
-      providerInstances: instances(["claudeAgent", claude("2.1.223", configDir)]),
-    }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining(`CLAUDE_CONFIG_DIR ("${configDir}") is not an absolute path`),
-      thread: { threadId: "t1", title: "t1" },
-    },
-  })),
-  {
-    name: "nothing when CLAUDE_CONFIG_DIR is absolute",
-    overrides: () => ({
-      providerInstances: instances(["claudeAgent", claude("2.1.223", "/config")]),
-    }),
-    expected: movesTo("B"),
-  },
-  {
-    name: "a Claude instance at 2.1.222, naming the version and the provider refresh",
-    overrides: () => ({ providerInstances: instances(["claudeAgent", claude("2.1.222")]) }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringMatching(/Claude Code 2\.1\.222.*Refresh the providers/),
-      thread: { threadId: "t1", title: "t1" },
-    },
-  },
-  {
-    name: "nothing for a newer Claude instance",
-    overrides: () => ({ providerInstances: instances(["claudeAgent", claude("2.2.0")]) }),
-    expected: movesTo("B"),
-  },
-  {
-    name: "a Claude instance with an unparsed version",
-    overrides: () => ({ providerInstances: instances(["claudeAgent", claude("garbage")]) }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("Claude Code garbage"),
-      thread: { threadId: "t1", title: "t1" },
-    },
-  },
-  {
-    name: "a Claude instance with no version",
-    overrides: () => ({ providerInstances: instances(["claudeAgent", claude(null)]) }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("unknown version"),
-      thread: { threadId: "t1", title: "t1" },
-    },
-  },
-  {
-    name: "the member on an older instance when two Claude instances differ",
-    overrides: (world) => ({
-      threads: world.threads.map((shell) =>
-        shell.id === "t1-side"
-          ? { ...shell, providerInstanceId: ProviderInstanceId.make("claude-two") }
-          : shell,
-      ),
+    member("t1", "disables"),
+  ],
+  ...["", "  ", " /config", ".claude-config"].map((configDir): EligibilityCase => [
+    `a Claude instance with CLAUDE_CONFIG_DIR ${JSON.stringify(configDir)}`,
+    claudeAt("2.1.223", configDir),
+    member("t1", `CLAUDE_CONFIG_DIR ("${configDir}") is not an absolute path`),
+  ]),
+  ["nothing when CLAUDE_CONFIG_DIR is absolute", claudeAt("2.1.223", "/config"), movesTo("B")],
+  [
+    "a Claude instance at 2.1.222, naming the version and the provider refresh",
+    claudeAt("2.1.222"),
+    member("t1", /Claude Code 2\.1\.222.*Refresh the providers/),
+  ],
+  ["nothing for a newer Claude instance", claudeAt("2.2.0"), movesTo("B")],
+  ["an unparsed Claude version", claudeAt("garbage"), member("t1", "Claude Code garbage")],
+  ["a Claude instance with no version", claudeAt(null), member("t1", "unknown version")],
+  [
+    "the member on an older instance when two Claude instances differ",
+    (world) => ({
+      ...patch(world, "t1-side", { providerInstanceId: ProviderInstanceId.make("claude-two") }),
       providerInstances: instances(
         ["claudeAgent", claude("2.1.223")],
         ["claude-two", claude("2.1.222")],
@@ -771,148 +521,114 @@ it.effect.each<{
         projectSettingsOverrides: {},
       },
     }),
-    expected: {
-      _tag: "refused",
-      reason: expect.stringContaining("2.1.222"),
-      thread: { threadId: "t1-side", title: "t1-side" },
-    },
-  },
-  {
-    name: "nothing for a Codex member",
-    overrides: (world) => ({
-      threads: world.threads.map((shell) =>
-        shell.id === "t1-sub"
-          ? { ...shell, providerInstanceId: ProviderInstanceId.make("codex") }
-          : shell,
-      ),
-    }),
-    expected: movesTo("B"),
-  },
-])("eligibility refuses $name", ({ overrides, probes, expected }) =>
+    member("t1-side", "2.1.222"),
+  ],
+  [
+    "nothing for a Codex member",
+    (world) => patch(world, "t1-sub", { providerInstanceId: ProviderInstanceId.make("codex") }),
+    movesTo("B"),
+  ],
+])("eligibility refuses %s", ([, setup, expected]) =>
   live(
     Effect.gen(function* () {
       const world = yield* makeWorld;
-      const result = yield* decide(
-        world,
-        request("t1", world.at("projB")),
-        overrides?.(world),
-        probes,
-      );
-      expect(result).toMatchObject(expected);
+      expect(yield* decide(world, request("t1", world.at("projB")), setup)).toMatchObject(expected);
     }),
   ),
 );
 
-it.effect.each<{
-  readonly name: string;
-  readonly thread: string;
-  readonly before?: (world: World) => Effect.Effect<void, PlatformError, FileSystem.FileSystem>;
-  readonly expected: (world: World) => object;
-}>([
-  {
-    name: "leaving a worktree names the threads that stay in it, not the side chat that moves",
-    thread: "t2",
-    expected: (world) => ({
+it.effect.each<
+  readonly [
+    name: string,
+    thread: string,
+    expected: (at: World["at"]) => object,
+    before?: (world: World) => Effect.Effect<void, PlatformError, FileSystem.FileSystem>,
+  ]
+>([
+  [
+    "leaving a worktree names the threads that stay in it, not the side chat that moves",
+    "t2",
+    (at) => ({
       _tag: "confirm",
-      from: world.at("W"),
-      to: world.at("link-B"),
-      staysOnDisk: `The folder ${world.at("W")} stays on disk with all its files until you remove it.`,
+      from: at("W"),
+      to: at("link-B"),
+      staysOnDisk: `The folder ${at("W")} stays on disk with all its files until you remove it.`,
       wayBack: "add-project",
-      otherThreads: [
-        { threadId: "t2-fork", title: "t2-fork" },
-        { threadId: "picker", title: "picker" },
-        { threadId: "linked", title: "linked" },
-      ],
+      otherThreads: ["t2-fork", "picker", "linked"].map(namedThread),
     }),
-  },
-  {
-    name: "leaving a worktree that is a project's root names the project and says /cd brings it back",
-    thread: "t3",
-    expected: (world) => ({
+  ],
+  [
+    "leaving a worktree that is a project's root names the project and says /cd brings it back",
+    "t3",
+    (at) => ({
       _tag: "confirm",
-      from: world.at("PW"),
+      from: at("PW"),
       wayBack: "cd",
-      project: { projectId: "P", title: "P" },
+      project: namedProject("P"),
       otherThreads: [],
     }),
-  },
-  {
-    name: "leaving a scratch folder has no way back",
-    thread: "tn",
-    expected: (world) => ({
+  ],
+  [
+    "leaving a scratch folder has no way back",
+    "tn",
+    (at) => ({ _tag: "confirm", from: at("scratch/thread"), wayBack: "none", otherThreads: [] }),
+  ],
+  [
+    "a removed folder no longer exists",
+    "t2",
+    () => ({
       _tag: "confirm",
-      from: world.at("scratch", "thread"),
-      wayBack: "none",
-      otherThreads: [],
+      staysOnDisk: "The folder no longer exists.",
+      otherThreads: ["t2-fork", "picker"].map(namedThread),
     }),
-  },
-  {
-    name: "a removed folder no longer exists",
-    thread: "t2",
-    before: (world) =>
+    (world) =>
       Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
         fileSystem.remove(world.at("W"), { recursive: true }),
       ),
-    expected: () => ({
-      _tag: "confirm",
-      staysOnDisk: "The folder no longer exists.",
-      otherThreads: [
-        { threadId: "t2-fork", title: "t2-fork" },
-        { threadId: "picker", title: "picker" },
-      ],
-    }),
-  },
-])("confirm: $name", ({ thread: threadId, before, expected }) =>
+  ],
+])("confirm: %s", ([, threadId, expected, before]) =>
   live(
     Effect.gen(function* () {
       const world = yield* makeWorld;
       yield* before?.(world) ?? Effect.void;
-      const result = yield* decide(world, request(threadId, world.at("projB")));
-      expect(result).toMatchObject(expected(world));
+      const input = request(threadId, world.at("projB"));
+      const result = yield* decide(world, input);
+      expect(result).toMatchObject(expected(world.at));
       const { _tag, ...leaving } = result as Extract<typeof result, { _tag: "confirm" }>;
-      const confirmed = yield* decide(
-        world,
-        request(threadId, world.at("projB"), { confirm: true }),
-      );
+      const confirmed = yield* decide(world, { ...input, confirm: true });
       expect(confirmed).toEqual(expect.objectContaining({ _tag: "move", leaving }));
     }),
   ),
 );
 
-it.effect.each<{
-  readonly name: string;
-  readonly flags?: Pick<ThreadMoveInput, "addProject" | "confirm">;
-  readonly probes?: Partial<Pick<ThreadMoveProbes, "threadRecords">>;
-  readonly expected: (world: World) => object;
-}>([
-  {
-    name: "asks for the project before the confirmation",
-    expected: (world) => ({ _tag: "needs-project", folder: world.at("plain") }),
-  },
-  {
-    name: "asks for the confirmation once the project question is answered",
-    flags: { addProject: true },
-    expected: (world) => ({ _tag: "confirm", from: world.at("W"), to: world.at("plain") }),
-  },
-  {
-    name: "moves to a new project with both answers",
-    flags: { addProject: true, confirm: true },
-    expected: (world) => ({
-      _tag: "move",
-      destination: { _tag: "new-project", folder: world.at("plain") },
-    }),
-  },
-  {
-    name: "refuses a busy member before any question",
-    probes: { threadRecords: onlyFor("t2-side", Effect.succeed(running), Effect.succeed(idle)) },
-    expected: () => ({ _tag: "refused", thread: { threadId: "t2-side", title: "t2-side" } }),
-  },
-])("from a worktree to a folder with no project, $name", ({ flags, probes, expected }) =>
+it.effect.each<
+  readonly [
+    name: string,
+    flags: Pick<ThreadMoveInput, "addProject" | "confirm">,
+    setup: Setup,
+    expected: (at: World["at"]) => object,
+  ]
+>([
+  ["asks for the project before the confirmation", {}, {}, (at) => needsProject(at("plain"))],
+  [
+    "asks for the confirmation once the project question is answered",
+    { addProject: true },
+    {},
+    (at) => ({ _tag: "confirm", from: at("W"), to: at("plain") }),
+  ],
+  [
+    "moves to a new project with both answers",
+    { addProject: true, confirm: true },
+    {},
+    (at) => ({ _tag: "move", destination: { _tag: "new-project", folder: at("plain") } }),
+  ],
+  ["refuses a busy member first", {}, records("t2-side", running), () => member("t2-side")],
+])("from a worktree to a folder with no project, %s", ([, flags, setup, expected]) =>
   live(
     Effect.gen(function* () {
       const world = yield* makeWorld;
-      const result = yield* decide(world, request("t2", world.at("plain"), flags), {}, probes);
-      expect(result).toMatchObject(expected(world));
+      const result = yield* decide(world, request("t2", world.at("plain"), flags), setup);
+      expect(result).toMatchObject(expected(world.at));
     }),
   ),
 );

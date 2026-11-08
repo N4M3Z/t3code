@@ -36,29 +36,25 @@ export function nativeStorageFolder(input: {
       )
       .map((attempt) => attempt.runId),
   );
-  const runsInOrder = [...input.runs].sort((left, right) => left.ordinal - right.ordinal);
-  const sessionRunCwd = runsInOrder.find(
-    (run) => sessionRunIds.has(run.id) && run.cwd !== undefined,
-  )?.cwd;
+  const runs = [...input.runs].sort((left, right) => left.ordinal - right.ordinal);
+  const sessionRunCwd = runs.find((run) => sessionRunIds.has(run.id) && run.cwd !== undefined)?.cwd;
   if (sessionRunCwd !== undefined) return sessionRunCwd;
   const rootScopes = new Map(
     input.checkpointScopes.flatMap((scope) =>
       scope.kind === "root_run" && scope.runId !== null ? [[scope.runId, scope] as const] : [],
     ),
   );
-  const rootScopesInRunOrder = runsInOrder.flatMap((run) => {
-    const scope = rootScopes.get(run.id);
-    return scope === undefined ? [] : [{ runId: run.id, scope }];
-  });
-  const sessionScope = rootScopesInRunOrder.find(({ runId }) => sessionRunIds.has(runId));
-  if (sessionScope !== undefined) return sessionScope.scope.cwd;
-  const attemptsNameSessions = input.attempts.some(
+  const scopes = runs.flatMap((run) => rootScopes.get(run.id) ?? []);
+  const sessionScope = scopes.find(
+    (scope) => scope.runId !== null && sessionRunIds.has(scope.runId),
+  );
+  if (sessionScope !== undefined) return sessionScope.cwd;
+  return input.attempts.some(
     (attempt) =>
       attempt.providerThreadId === providerThread.id && attempt.nativeThreadId !== undefined,
-  );
-  if (attemptsNameSessions) return undefined;
-  return rootScopesInRunOrder.find(({ scope }) => scope.providerThreadId === providerThread.id)
-    ?.scope.cwd;
+  )
+    ? undefined
+    : scopes.find((scope) => scope.providerThreadId === providerThread.id)?.cwd;
 }
 
 export const nativeStorageFolders = Effect.fn("NativeStorageFolder.nativeStorageFolders")(
@@ -84,10 +80,9 @@ export const nativeStorageFolders = Effect.fn("NativeStorageFolder.nativeStorage
     const folders = new Map<ProviderThreadId, string>();
     for (const providerThread of records.providerThreads) {
       if (providerThread.driver !== "claudeAgent") continue;
-      const history = { providerThread, runs: records.runs, attempts: records.attempts };
       const folder =
-        nativeStorageFolder({ ...history, checkpointScopes: [] }) ??
-        nativeStorageFolder({ ...history, checkpointScopes: yield* scopes });
+        nativeStorageFolder({ ...records, providerThread, checkpointScopes: [] }) ??
+        nativeStorageFolder({ ...records, providerThread, checkpointScopes: yield* scopes });
       if (folder !== undefined) folders.set(providerThread.id, folder);
     }
     return folders;

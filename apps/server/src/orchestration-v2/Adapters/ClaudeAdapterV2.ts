@@ -11186,19 +11186,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
-            // A continuation owns the request it starts under until its drain releases it; ending
-            // earlier releases that request for a later wake, never one registered since.
+            // A continuation releases the request it started under, never one registered since.
             const requestNativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
             const continuationRequest =
               isClaudeProviderContinuationTurn(turnInput) &&
               typeof requestNativeThreadId === "string"
                 ? (yield* Ref.get(requestedContinuations)).get(requestNativeThreadId)
                 : undefined;
-            yield* Effect.addFinalizer(() =>
-              continuationRequest !== undefined && typeof requestNativeThreadId === "string"
-                ? releaseContinuationRequest(requestNativeThreadId, continuationRequest)
-                : Effect.void,
-            );
+            if (continuationRequest !== undefined && typeof requestNativeThreadId === "string") {
+              yield* Effect.addFinalizer(() =>
+                releaseContinuationRequest(requestNativeThreadId, continuationRequest),
+              );
+            }
             modelCatalog = yield* loadModelCatalog;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -11272,15 +11271,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     Effect.provideService(Path.Path, path),
                   );
             const querySession = yield* openQuery(turnInput, nativeThreadId);
-            const storageFolder = querySession.createdSessionFolder;
             const storedTurnInput =
-              storageFolder === undefined
+              querySession.createdSessionFolder === undefined
                 ? turnInput
                 : {
                     ...turnInput,
                     providerThread: {
                       ...turnInput.providerThread,
-                      nativeStorageFolder: storageFolder,
+                      nativeStorageFolder: querySession.createdSessionFolder,
                     },
                   };
             const autoCompactWindow = yield* resolveAutoCompactWindow(

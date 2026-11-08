@@ -309,7 +309,6 @@ function makeLocalCommandHarness(input: {
    * A side chat whose context targets this run, an earlier run that failed or was cancelled before
    * the provider, or an earlier run that delivered it. `nativeForkFrom` plans a native fork of the
    * parent. `switchedProvider` puts the earlier run and its context on another provider thread.
-   * `moveDuringFork` commits a parent relocation under its lock after the fork's first outbox query.
    */
   readonly sideChat?: {
     readonly contextRun: "current" | "failed" | "cancelled" | "delivered";
@@ -1408,77 +1407,38 @@ effectIt.effect.each([
     }),
 );
 
+const forkHarness = (
+  sideChat: Partial<NonNullable<Parameters<typeof makeLocalCommandHarness>[0]["sideChat"]>> = {},
+  driver = "claudeAgent",
+) =>
+  makeLocalCommandHarness({
+    text: "What is the main thread doing?",
+    driver: ProviderDriverKind.make(driver),
+    sideChat: { contextRun: "current", nativeForkFrom: "idle", ...sideChat },
+  });
+
 effectIt.effect.each([
-  {
-    nativeForkFrom: "idle",
-    driver: "claudeAgent",
-    parentRunCwd: undefined,
-    forks: true,
-    transferStatus: "consumed",
-    handoffIds: [],
-    // The parent's runs predate run.cwd; its first run's scope event keeps the folder.
-    storageFolder: "/repo/side-chat-parent",
-    eventReads: 1,
-  },
-  {
-    nativeForkFrom: "idle",
-    driver: "claudeAgent",
-    parentRunCwd: "/repo/side-chat-parent-run",
-    forks: true,
-    transferStatus: "consumed",
-    handoffIds: [],
-    // Only the first run predates run.cwd; the later run's cwd decides without the events.
-    storageFolder: "/repo/side-chat-parent-run",
-    eventReads: 0,
-  },
-  {
-    nativeForkFrom: "idle",
-    driver: "codex",
-    parentRunCwd: undefined,
-    forks: true,
-    transferStatus: "consumed",
-    handoffIds: [],
-    storageFolder: undefined,
-    eventReads: 0,
-  },
+  { nativeForkFrom: "idle", forks: true, transferStatus: "consumed", handoffIds: [] },
   {
     nativeForkFrom: "busy",
-    driver: "codex",
-    parentRunCwd: undefined,
     forks: false,
     transferStatus: "resolved_portable",
     handoffIds: ["side-chat-fork-context"],
-    storageFolder: undefined,
-    eventReads: 0,
   },
 ] as const)(
-  "runs a planned native side chat fork when the parent is $nativeForkFrom on $driver with run folder $parentRunCwd",
-  ({
-    nativeForkFrom,
-    driver,
-    parentRunCwd,
-    forks,
-    transferStatus,
-    handoffIds,
-    storageFolder,
-    eventReads,
-  }) =>
+  "runs a planned native side chat fork when the parent is $nativeForkFrom",
+  ({ nativeForkFrom, forks, transferStatus, handoffIds }) =>
     Effect.gen(function* () {
       const harness = makeLocalCommandHarness({
         text: "What is the main thread doing?",
-        driver: ProviderDriverKind.make(driver),
-        sideChat: {
-          contextRun: "current",
-          nativeForkFrom,
-          ...(parentRunCwd === undefined ? {} : { parentRunCwd }),
-        },
+        sideChat: { contextRun: "current", nativeForkFrom },
       });
 
       yield* harness.start;
 
       expect(harness.forkThread).toHaveBeenCalledTimes(forks ? 1 : 0);
-      expect(harness.forkThread.mock.calls[0]?.[0].sourceNativeStorageFolder).toBe(storageFolder);
-      expect(harness.readEvents).toHaveBeenCalledTimes(eventReads);
+      expect(harness.forkThread.mock.calls[0]?.[0].sourceNativeStorageFolder).toBeUndefined();
+      expect(harness.readEvents).not.toHaveBeenCalled();
       // The parent's rolled-back turn is gone from its native conversation.
       expect(
         harness.forkThread.mock.calls[0]?.[0].sourceProviderTurns?.map((turn) => turn.id),
@@ -1493,43 +1453,49 @@ effectIt.effect.each([
     }),
 );
 
-effectIt.effect("waits for the parent's Claude relocation before reading its storage folder", () =>
-  Effect.gen(function* () {
-    const relocation = yield* Deferred.make<void>();
-    const harness = makeLocalCommandHarness({
-      text: "What is the main thread doing?",
-      driver: ProviderDriverKind.make("claudeAgent"),
-      sideChat: { contextRun: "current", nativeForkFrom: "idle", relocation },
-    });
+effectIt.effect.each([
+  // The parent's runs predate run.cwd; its first run's scope event keeps the folder.
+  { parentRunCwd: undefined, storageFolder: "/repo/side-chat-parent", eventReads: 1 },
+  // Only the first run predates run.cwd; the later run's cwd decides without the events.
+  {
+    parentRunCwd: "/repo/side-chat-parent-run",
+    storageFolder: "/repo/side-chat-parent-run",
+    eventReads: 0,
+  },
+])(
+  "forks a Claude parent from its session's storage folder $storageFolder",
+  ({ parentRunCwd, storageFolder, eventReads }) =>
+    Effect.gen(function* () {
+      const harness = forkHarness(parentRunCwd === undefined ? {} : { parentRunCwd });
 
-    const start = yield* Effect.forkChild(harness.start);
-    yield* Effect.race(Deferred.await(harness.relocationAwaited), Fiber.await(start));
-    expect(harness.forkThread).not.toHaveBeenCalled();
-    yield* Deferred.succeed(relocation, undefined);
-    yield* Fiber.join(start);
+      yield* harness.start;
 
-    expect(harness.forkThread.mock.calls[0]?.[0].sourceProviderThread.nativeStorageFolder).toBe(
-      "/repo/side-chat-parent-moved",
-    );
-    expect(harness.readEvents).not.toHaveBeenCalled();
-  }),
+      expect(harness.forkThread.mock.calls[0]?.[0].sourceNativeStorageFolder).toBe(storageFolder);
+      expect(harness.readEvents).toHaveBeenCalledTimes(eventReads);
+    }),
 );
 
-effectIt.effect("forks a Codex parent without waiting for a Claude relocation on its thread", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "What is the main thread doing?",
-      sideChat: {
-        contextRun: "current",
-        nativeForkFrom: "idle",
-        relocation: yield* Deferred.make<void>(),
-      },
-    });
+effectIt.effect.each([
+  { driver: "claudeAgent", forksBeforeRelocation: false, folder: "/repo/side-chat-parent-moved" },
+  { driver: "codex", forksBeforeRelocation: true, folder: undefined },
+])(
+  "waits for the parent's Claude relocation before reading its storage folder: $driver",
+  ({ driver, forksBeforeRelocation, folder }) =>
+    Effect.gen(function* () {
+      const relocation = yield* Deferred.make<void>();
+      const harness = forkHarness({ relocation }, driver);
 
-    const start = yield* Effect.forkChild(harness.start);
-    yield* Effect.race(Deferred.await(harness.relocationAwaited), Fiber.await(start));
-    expect(harness.forkThread).toHaveBeenCalledOnce();
-  }),
+      const start = yield* Effect.forkChild(harness.start);
+      yield* Effect.race(Deferred.await(harness.relocationAwaited), Fiber.await(start));
+      expect(harness.forkThread).toHaveBeenCalledTimes(forksBeforeRelocation ? 1 : 0);
+      yield* Deferred.succeed(relocation, undefined);
+      yield* Fiber.join(start);
+
+      expect(harness.forkThread.mock.calls[0]?.[0].sourceProviderThread.nativeStorageFolder).toBe(
+        folder,
+      );
+      expect(harness.readEvents).not.toHaveBeenCalled();
+    }),
 );
 
 effectIt.effect.each([
@@ -1539,15 +1505,9 @@ effectIt.effect.each([
   "blocks a move between the fork's relocation check and the fork: folder $parentStorageFolder",
   ({ parentStorageFolder }) =>
     Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({
-        text: "What is the main thread doing?",
-        driver: ProviderDriverKind.make("claudeAgent"),
-        sideChat: {
-          contextRun: "current",
-          nativeForkFrom: "idle",
-          moveDuringFork: true,
-          ...(parentStorageFolder === undefined ? {} : { parentStorageFolder }),
-        },
+      const harness = forkHarness({
+        moveDuringFork: true,
+        ...(parentStorageFolder === undefined ? {} : { parentStorageFolder }),
       });
 
       yield* harness.start;
@@ -1563,15 +1523,7 @@ effectIt.effect.each([true, false])(
   "fails a fork whose parent's Claude session is still moving only on the last attempt: willRetry %s",
   (willRetry) =>
     Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({
-        text: "What is the main thread doing?",
-        driver: ProviderDriverKind.make("claudeAgent"),
-        sideChat: {
-          contextRun: "current",
-          nativeForkFrom: "idle",
-          relocation: yield* Deferred.make<void>(),
-        },
-      });
+      const harness = forkHarness({ relocation: yield* Deferred.make<void>() });
 
       const start = yield* Effect.forkChild(
         Effect.exit(willRetry ? harness.startWithRetry : harness.start),

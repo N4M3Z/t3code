@@ -2150,9 +2150,7 @@ describe("orchestration v2 provider switching", () => {
               const adapter = adapters.find((candidate) => candidate.instanceId === instanceId);
               return adapter === undefined
                 ? Effect.fail(
-                    new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({
-                      instanceId,
-                    }),
+                    new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({ instanceId }),
                   )
                 : Effect.succeed(adapter);
             },
@@ -2161,9 +2159,7 @@ describe("orchestration v2 provider switching", () => {
               const adapter = adapters.find((candidate) => candidate.instanceId === instanceId);
               return adapter === undefined
                 ? Effect.fail(
-                    new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({
-                      instanceId,
-                    }),
+                    new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({ instanceId }),
                   )
                 : Effect.succeed({
                     driver: CODEX_DRIVER,

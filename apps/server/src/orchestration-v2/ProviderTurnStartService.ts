@@ -1170,7 +1170,7 @@ export const layer: Layer.Layer<
             Option.isNone(
               yield* Effect.forEach(
                 yield* outbox.unsettledEffectIds({
-                  threadId: nativeForkTransfer.sourceThreadId,
+                  threadIds: [nativeForkTransfer.sourceThreadId],
                   effectType: "provider-session.relocate-storage",
                 }),
                 outbox.awaitSettled,

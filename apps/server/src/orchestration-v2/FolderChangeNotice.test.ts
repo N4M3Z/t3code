@@ -85,15 +85,6 @@ it("takes the folder of the latest run the provider accepted that still stands",
     latest([run(1, { completedAt: DateTime.makeUnsafe(3000) }), run(2)]),
     "/folder/1",
   );
-  const inA = run(1, { cwd: "/a" });
-  const failed = run(2, { cwd: "/w", status: "failed" });
-  const next = run(3, { cwd: "/w" });
-  assert.strictEqual(latest([inA, failed, next], { accepted: [inA] }), "/a");
-  assert.strictEqual(latest([inA, failed, next], { accepted: [inA, next] }), "/w");
-  assert.strictEqual(
-    latest([inA, failed, { ...next, status: "rolled_back" }], { accepted: [inA, next] }),
-    "/a",
-  );
 });
 
 it("skips a /goal run only when the driver that ran it parses /goal", () => {

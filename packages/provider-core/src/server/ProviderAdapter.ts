@@ -490,9 +490,7 @@ export interface ProviderAdapterV2TurnInput {
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
-  /** Reads the native session's storage folder from run history, for a `providerThread` that has not recorded one. */
   readonly readNativeStorageFolder?: Effect.Effect<string | undefined>;
-  /** Receives the folder a fresh open created the native session in, so a turn that fails to start still records it. */
   readonly recordNativeStorageFolder?: (folder: string) => Effect.Effect<void>;
 }
 
@@ -557,7 +555,6 @@ export interface ProviderAdapterV2ForkThreadInput {
   readonly ownerNodeId?: NodeId;
   readonly modelSelection?: ModelSelection;
   readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
-  /** The source session's storage folder from run history, when `sourceProviderThread` has not recorded one. */
   readonly sourceNativeStorageFolder?: string;
 }
 

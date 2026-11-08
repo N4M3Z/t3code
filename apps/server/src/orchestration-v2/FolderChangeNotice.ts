@@ -23,19 +23,10 @@ export function latestCountedRunFolder(projection: {
   >;
 }): string | undefined {
   const acceptedAttemptIds = new Set(projection.providerTurns.map((turn) => turn.runAttemptId));
-  const acceptedAttempts = projection.attempts.filter((attempt) =>
-    acceptedAttemptIds.has(attempt.id),
-  );
-  const goalThreadIds = new Set(
+  const goalParsers = new Set(
     projection.providerThreads
       .filter((thread) => thread.driver === "codex" || thread.driver === "claudeAgent")
       .map((thread) => thread.id),
-  );
-  const acceptedRunIds = new Set(acceptedAttempts.map((attempt) => attempt.runId));
-  const goalAsTextRunIds = new Set(
-    acceptedAttempts
-      .filter((attempt) => !goalThreadIds.has(attempt.providerThreadId))
-      .map((attempt) => attempt.runId),
   );
   const messages = new Map(projection.messages.map((message) => [message.id, message]));
   return projection.runs.reduce<OrchestrationV2Run | undefined>((latest, run) => {
@@ -45,7 +36,12 @@ export function latestCountedRunFolder(projection: {
       run.status !== "rolled_back" &&
       run.restartContinuationOfRunId === undefined &&
       !(message !== undefined && isCompactionCommandMessage(message)) &&
-      (goal ? goalAsTextRunIds : acceptedRunIds).has(run.id) &&
+      projection.attempts.some(
+        (attempt) =>
+          attempt.runId === run.id &&
+          acceptedAttemptIds.has(attempt.id) &&
+          !(goal && goalParsers.has(attempt.providerThreadId)),
+      ) &&
       (latest === undefined || runRanAfter(run, latest))
       ? run
       : latest;

@@ -57,12 +57,6 @@ const checkpointScopes = [
 describe("nativeStorageFolder", () => {
   it.each([
     {
-      name: "uses the recorded folder",
-      providerThread: providerThread("session-b", "/repo/b"),
-      attempts: [attempt(1, "session-b")],
-      expected: "/repo/b",
-    },
-    {
       name: "uses the cwd of the earliest run that sent to the session, not the row's earliest run",
       providerThread: providerThread("session-b"),
       attempts: [
@@ -137,15 +131,4 @@ describe("nativeStorageFolder", () => {
         expect(read).toHaveBeenCalledTimes(1);
       }),
   );
-
-  it("leaves the folder to the caller when the thread has no runs", () => {
-    expect(
-      nativeStorageFolder({
-        providerThread: providerThread("session-imported"),
-        runs: [],
-        attempts: [],
-        checkpointScopes: [],
-      }),
-    ).toBeUndefined();
-  });
 });

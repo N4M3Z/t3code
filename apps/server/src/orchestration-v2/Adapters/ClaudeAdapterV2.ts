@@ -1393,20 +1393,18 @@ export const layerQueryRunner: Layer.Layer<
               ),
             ),
             offer: (message, onQueued) =>
-              Effect.uninterruptibleMask((restore) =>
-                restore(Queue.offer(promptQueue, message)).pipe(
-                  Effect.flatMap((queued) =>
-                    queued
-                      ? Effect.sync(() => onQueued?.())
-                      : Effect.fail(
-                          queryRunnerError(
-                            new Error("Claude prompt queue closed before the prompt was queued."),
-                            "offer",
-                          ),
-                        ),
-                  ),
-                ),
-              ).pipe(
+              // Queue and report in one step: Claude can read the prompt as soon as it is queued.
+              Effect.suspend(() => {
+                if (!Queue.offerUnsafe(promptQueue, message))
+                  return Effect.fail(
+                    queryRunnerError(
+                      new Error("Claude prompt queue closed before the prompt was queued."),
+                      "offer",
+                    ),
+                  );
+                onQueued?.();
+                return Effect.void;
+              }).pipe(
                 Effect.tap(() =>
                   logProtocolEvent({
                     direction: "outgoing",

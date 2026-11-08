@@ -2736,7 +2736,39 @@ describe("ClaudeAdapterV2 native fork", () => {
   );
 });
 
-function makeFakeClaudeCli(answerSetServers = true) {
+// After `parkAfter(n)`, yields the next fiber to pass n operations since it resumed and holds its continuation.
+const makeParkingScheduler = Effect.gen(function* () {
+  const base = yield* Scheduler.Scheduler;
+  const parked = yield* Queue.unbounded<() => void>();
+  let yieldAfter = -1;
+  let park = false;
+  const scheduler: Scheduler.Scheduler = {
+    executionMode: base.executionMode,
+    shouldYield: (fiber) => {
+      if (yieldAfter < 0 || fiber.currentOpCount <= yieldAfter) return base.shouldYield(fiber);
+      yieldAfter = -1;
+      park = true;
+      return true;
+    },
+    makeDispatcher: () => {
+      const dispatcher = base.makeDispatcher();
+      return {
+        scheduleTask: (task, priority) => {
+          if (!park) return dispatcher.scheduleTask(task, priority);
+          park = false;
+          Queue.offerUnsafe(parked, task);
+        },
+        flush: () => dispatcher.flush(),
+      };
+    },
+  };
+  const parkAfter = (ops: number) => {
+    yieldAfter = ops;
+  };
+  return { scheduler, parked, parkAfter };
+});
+
+function makeFakeClaudeCli(answerSetServers = true, onPrompt?: (content: unknown) => void) {
   const spawns: Array<SpawnOptions> = [];
   const controlRequests: Array<object> = [];
   const stdins: Array<NodeStream.PassThrough> = [];
@@ -2762,6 +2794,7 @@ function makeFakeClaudeCli(answerSetServers = true) {
       for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
         const frame = JSON.parse(pending.slice(0, end));
         pending = pending.slice(end + 1);
+        if (frame.type === "user") onPrompt?.(frame.message.content);
         if (frame.type !== "control_request") continue;
         controlRequests.push(frame.request);
         const setServers = frame.request.subtype === "mcp_set_servers";
@@ -2861,6 +2894,36 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
         .pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(offered));
       assert.isFalse(queued);
+    }),
+  );
+
+  it.effect("reports a prompt queued before Claude can read it, wherever its offer yields", () =>
+    Effect.gen(function* () {
+      const prompts = yield* Queue.unbounded<unknown>();
+      const session = yield* openWith(
+        makeFakeClaudeCli(true, (content) => Queue.offerUnsafe(prompts, content)),
+      );
+      const { scheduler, parked, parkAfter } = yield* makeParkingScheduler;
+      // Park the offer at each yield point until it has reported; Claude reads prompts in queue
+      // order, so a probe offered meanwhile arrives first unless the prompt was already queued.
+      for (let step = 0, queued = false; !queued; step++) {
+        let reported = false;
+        parkAfter(step);
+        const offering = yield* session
+          .offer(ClaudeAdapterV2.makeClaudeUserMessage({ text: `Prompt ${step}.` }), () => {
+            reported = true;
+          })
+          .pipe(Effect.provideService(Scheduler.Scheduler, scheduler), Effect.forkChild);
+        const resume = yield* Queue.take(parked);
+        queued = reported;
+        yield* session.offer(ClaudeAdapterV2.makeClaudeUserMessage({ text: "Probe." }));
+        const read = (yield* Queue.take(prompts)) === `Prompt ${step}.`;
+        yield* Effect.sync(resume);
+        yield* Fiber.join(offering);
+        yield* Queue.take(prompts);
+        assert.equal(queued, read);
+      }
+      yield* session.close;
     }),
   );
 
@@ -3748,32 +3811,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   )
                 : Effect.void,
           });
-          const base = yield* Scheduler.Scheduler;
-          const parked = yield* Queue.unbounded<() => void>();
-          let yieldAfter = -1;
-          let park = false;
-          // Yields the publisher once, `yieldAfter` operations after its offer returns, and holds that continuation.
-          const scheduler: Scheduler.Scheduler = {
-            executionMode: base.executionMode,
-            shouldYield: (fiber) => {
-              if (yieldAfter < 0 || fiber.currentOpCount <= yieldAfter)
-                return base.shouldYield(fiber);
-              yieldAfter = -1;
-              park = true;
-              return true;
-            },
-            makeDispatcher: () => {
-              const dispatcher = base.makeDispatcher();
-              return {
-                scheduleTask: (task, priority) => {
-                  if (!park) return dispatcher.scheduleTask(task, priority);
-                  park = false;
-                  Queue.offerUnsafe(parked, task);
-                },
-                flush: () => dispatcher.flush(),
-              };
-            },
-          };
+          const { scheduler, parked, parkAfter } = yield* makeParkingScheduler;
           const now = yield* DateTime.now;
           const turnInput = (attempt: string, providerTurnOrdinal: number) =>
             makeClaudeTestTurnInput({
@@ -3805,7 +3843,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 Effect.forkChild,
               );
             yield* Deferred.await(offerPending);
-            yieldAfter = step;
+            parkAfter(step);
             yield* Deferred.succeed(pendingOffer, undefined);
             const resume = yield* Queue.take(parked);
             yield* Queue.shutdown(harness.processQueues.at(-1)!);

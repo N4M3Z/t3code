@@ -100,6 +100,20 @@ export function folderMoveBlockReason(input: {
   return null;
 }
 
+/**
+ * Splits a refusal at its backtick spans, which hold paths. Punctuation that only closed the
+ * path's clause goes away, because the path gets a line of its own.
+ */
+export function splitInlineCode(
+  text: string,
+): ReadonlyArray<{ readonly code: boolean; readonly text: string }> {
+  return text.split(/`([^`]+)`/u).flatMap((part, index) => {
+    const code = index % 2 === 1;
+    const shown = code ? part : (index === 0 ? part : part.replace(/^[.,:;]\s*/u, "")).trim();
+    return shown === "" ? [] : [{ code, text: shown }];
+  });
+}
+
 const THREAD_STILL_WORKING = "This thread is still working. Try again when the turn ends.";
 
 /** Why the slash menu shows `/cd` and `/no` as blocked, before the user types the command. */

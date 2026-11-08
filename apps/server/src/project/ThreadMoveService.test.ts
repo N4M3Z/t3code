@@ -353,7 +353,7 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
       (threadId) =>
         member(
           threadId,
-          `"${threadId}" still has background work running. The project "plain" was added and stays.`,
+          `This thread still has background work running. The project "plain" was added and stays.`,
         ),
     ],
     [

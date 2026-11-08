@@ -269,8 +269,8 @@ it.layer(NodeServices.layer)("decideThreadMove", (it) => {
     ["rule 6: a submodule under worktrees/ needs one", "main/worktrees/lib", needsProject],
     ["rule 6: a checkout whose git dir is under worktrees/", "separate", needsProject],
     ["rule 6: a deleted project's root needs a project", "deleted", needsProject],
-    ["a missing folder is refused", "missing", refusal("not an existing folder")],
-    ["a file is refused", "afile", refusal("not an existing folder")],
+    ["a missing folder is refused", "missing", refusal(/^No folder at `.*missing`\.$/)],
+    ["a file is refused", "afile", refusal("No folder at `")],
   ])("/cd %s", ([, typed, expected, threadId = "t1"]) =>
     Effect.gen(function* () {
       const world = yield* makeWorld;
@@ -338,7 +338,16 @@ it.layer(NodeServices.layer)("decideThreadMove", (it) => {
   type EligibilityCase = readonly [string, Setup, object];
 
   it.effect.each<EligibilityCase>([
-    ["a running turn", records("t1-sub", running), member("t1-sub", "Try again when the turn")],
+    [
+      "a running turn",
+      records("t1-sub", running),
+      member("t1-sub", /^"t1-sub" is still working\. Try again when the turn ends\.$/),
+    ],
+    [
+      "the thread's own running turn, without its title",
+      records("t1", running),
+      member("t1", /^This thread is still working\. Try again when the turn ends\.$/),
+    ],
     ["a pending request", records("t1-side", pending), member("t1-side")],
     ["background work", background("t1-side", busy), member("t1-side", "background work")],
     ["a failing probe", background("t1-side", probeFailed), member("t1-side", "background work")],

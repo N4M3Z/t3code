@@ -172,3 +172,28 @@ it("ignores a second /cd until the first move has reported and cleared the draft
   await act(send);
   expect(mocks.move).toHaveBeenCalledTimes(2);
 });
+
+it("keeps one move toast on its thread and closes it when the next attempt starts", async () => {
+  const { screen, send } = await setup({});
+  await using _screen = screen;
+  mocks.move.mockResolvedValue(AsyncResult.success({ _tag: "refused", reason: "Busy." }));
+  using add = vi.spyOn(toastManager, "add").mockReturnValueOnce("first").mockReturnValue("second");
+  using close = vi.spyOn(toastManager, "close");
+
+  await act(send);
+  expect(add).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      title: "Thread not moved",
+      description: "Busy.",
+      data: expect.objectContaining({ threadRef: DRAFT_TARGET }),
+    }),
+  );
+  expect(close).not.toHaveBeenCalled();
+
+  mocks.move.mockResolvedValue(
+    AsyncResult.success({ _tag: "moved", folder: "/repo", members: [] }),
+  );
+  await act(send);
+  expect(close).toHaveBeenCalledWith("first");
+  expect(add).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Already here" }));
+});

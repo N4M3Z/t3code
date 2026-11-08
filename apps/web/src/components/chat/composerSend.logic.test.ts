@@ -18,6 +18,7 @@ import {
   referencedThreadContexts,
   runThreadMove,
   folderMoveMenuBlockReason,
+  splitInlineCode,
   threadMoveDialogCopy,
 } from "./composerSend.logic";
 
@@ -164,6 +165,19 @@ it("folderMoveMenuBlockReason names the first thing that blocks a move", () => {
   expect(folderMoveMenuBlockReason({ ...free, running: true, isLocalDraftThread: true })).toBe(
     "Choose the project before the first message.",
   );
+});
+
+it("splitInlineCode gives each path its own part and drops the punctuation around it", () => {
+  expect(splitInlineCode("Busy.")).toEqual([{ code: false, text: "Busy." }]);
+  expect(splitInlineCode("No folder at `/a b/c`.")).toEqual([
+    { code: false, text: "No folder at" },
+    { code: true, text: "/a b/c" },
+  ]);
+  expect(splitInlineCode("The scratch root is at `/s`. Use /no.")).toEqual([
+    { code: false, text: "The scratch root is at" },
+    { code: true, text: "/s" },
+    { code: false, text: "Use /no." },
+  ]);
 });
 
 const threadId = ThreadId.make("thread-1");

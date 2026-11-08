@@ -60,6 +60,7 @@ import {
   parseStandaloneComposerSlashCommand,
 } from "../../composer-logic";
 import { askThreadMove } from "./threadMoveDialogStore";
+import { threadMoveToastDescription } from "./threadMoveToast";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { resolvePlanFollowUpSubmission } from "../../proposedPlan";
 import { type ChatMessage } from "../../types";
@@ -404,6 +405,7 @@ export function useComposerSend(input: ComposerSendInput) {
   const { sendInFlight: sendInFlightRef } = draftSendState(routeThreadKey);
   const composerSendGenerationRef = useRef(0);
   const environmentUnavailableSendToastSlotRef = useRef(0);
+  const moveToastIdRef = useRef<ReturnType<typeof toastManager.add> | null>(null);
   // A send awaits uploads before it declines, so it reads the approvals pending by then.
   const pendingApprovalsRef = useRef(pendingApprovals);
   const respondingRequestIdsRef = useRef(respondingRequestIds);
@@ -555,10 +557,30 @@ export function useComposerSend(input: ComposerSendInput) {
         requestPending: activePendingProgress !== null || pendingApprovalsRef.current.length > 0,
         textOnly: !directAnnotation && !hasContext,
       });
-      const notify = (toast: Parameters<typeof stackedThreadToast>[0]) =>
-        void toastManager.add(stackedThreadToast(toast));
-      const refuse = (description: string) =>
-        notify({ type: "warning", title: "Thread not moved", description });
+      // One move toast at a time: a new attempt or a question replaces the last answer.
+      const closeMoveToast = () => {
+        if (moveToastIdRef.current !== null) toastManager.close(moveToastIdRef.current);
+        moveToastIdRef.current = null;
+      };
+      const notify = (toast: Parameters<typeof stackedThreadToast>[0]) => {
+        closeMoveToast();
+        moveToastIdRef.current = toastManager.add(
+          stackedThreadToast({
+            ...toast,
+            // A draft has no thread route to scope the toast to.
+            ...(isLocalDraftThread
+              ? {}
+              : { data: { threadRef: scopeThreadRef(environmentId, activeThread.id) } }),
+          }),
+        );
+      };
+      const refuse = (reason: string) =>
+        notify({
+          type: "warning",
+          title: "Thread not moved",
+          description: threadMoveToastDescription(reason),
+        });
+      closeMoveToast();
       if (blockReason !== null) return refuse(blockReason);
       if (folderMove.command === "cd" && folderMove.path === null) {
         const folder =
@@ -580,19 +602,27 @@ export function useComposerSend(input: ComposerSendInput) {
           const reason = error instanceof Error ? error.message : "Could not move the thread.";
           return { _tag: "refused", reason };
         },
-        (question) =>
-          askThreadMove(
+        (question) => {
+          closeMoveToast();
+          return askThreadMove(
             threadMoveDialogCopy(
               question,
               activeThread.worktreePath ?? activeProject?.workspaceRoot ?? null,
             ),
-          ),
+          );
+        },
       )
         .then((outcome) => {
           if (outcome === null) return;
           if (outcome._tag === "refused") return refuse(outcome.reason);
           if (outcome.members.length === 0) {
-            notify({ type: "info", title: `Already in ${outcome.folder}.` });
+            notify({
+              type: "info",
+              title: "Already here",
+              description: threadMoveToastDescription(
+                `This thread works in \`${outcome.folder}\`.`,
+              ),
+            });
           }
           if (
             currentRouteThreadKeyRef.current === routeThreadKey &&

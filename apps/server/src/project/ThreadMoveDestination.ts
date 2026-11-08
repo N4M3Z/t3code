@@ -90,6 +90,8 @@ const refused = (reason: string, named?: Pick<Refused, "thread" | "projects">): 
 const namedProject = (project: Project) => ({ projectId: project.id, title: project.title });
 const namedThread = (thread: ThreadMoveShell) => ({ threadId: thread.id, title: thread.title });
 const quote = (title: string) => `"${title}"`;
+/** Backticks mark a path, so the client shows it as code on its own line. */
+const code = (folder: string) => `\`${folder}\``;
 
 const failure = (verb: string, target: string) => (cause: unknown) =>
   new ThreadMoveError({ message: `Could not ${verb} ${target}.`, cause });
@@ -104,14 +106,14 @@ const kindOf = (fileSystem: FileSystem.FileSystem, target: string) =>
 const matchProject = (folder: string, matches: ReadonlyArray<Project>) => {
   if (matches.length > 1) {
     return refused(
-      `${folder} is the root of more than one project: ${matches.map((project) => quote(project.title)).join(", ")}.`,
+      `More than one project has its root at ${code(folder)}: ${matches.map((project) => quote(project.title)).join(", ")}.`,
       { projects: matches.map(namedProject) },
     );
   }
   const match = matches[0];
   return match !== undefined && match.archivedAt != null
     ? refused(
-        `${folder} is the root of the archived project ${quote(match.title)}. Unarchive it to move the thread there.`,
+        `The archived project ${quote(match.title)} has its root at ${code(folder)}. Unarchive it to move the thread there.`,
         { projects: [namedProject(match)] },
       )
     : match;
@@ -194,7 +196,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     const target = path.resolve(currentFolder, expandHomePath(request.destination, input.home));
     const folder = yield* fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => null));
     if (folder === null || (yield* kindOf(fileSystem, folder)) !== "Directory") {
-      return refused(`${target} is not an existing folder.`);
+      return refused(`No folder at ${code(target)}.`);
     }
     if (folder === threadFolder) {
       const others = projectsAt(folder).filter(
@@ -202,14 +204,14 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
       );
       return others.length > 0
         ? refused(
-            `${folder} is already this thread's folder. A move to another project with no folder change is not supported.`,
+            `This thread already works in ${code(folder)}. A move to another project with no folder change is not supported.`,
             { projects: others.map(namedProject) },
           )
         : { _tag: "moved" as const, folder: currentFolder, members: [] };
     }
     if (folder === scratchRoot) {
       return refused(
-        `${folder} is the scratch root. Use /no to move the thread to a new scratch folder.`,
+        `The scratch root is at ${code(folder)}. Use /no to move the thread to a new scratch folder.`,
       );
     }
     const project = matchProject(folder, projectsAt(folder));
@@ -218,11 +220,11 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
     }
     if (scratchRoot !== undefined && isWithinRoot(path, folder, scratchRoot)) {
       return refused(
-        `${folder} is a scratch folder. Use /no to move the thread to a new scratch folder${inNoProject ? ", or Turn into project to keep this one" : ""}.`,
+        `The folder ${code(folder)} is a scratch folder. Use /no to move the thread to a new scratch folder${inNoProject ? ", or Turn into project to keep this one" : ""}.`,
       );
     }
     const worktreeRefusal = refused(
-      `${folder} is inside a worktree. Only a worktree that is a project root can be a destination.`,
+      `The folder ${code(folder)} is inside a worktree. Only a worktree that is a project root can be a destination.`,
     );
     for (const directory of input.managedWorktreeDirectories) {
       if (isWithinRoot(path, folder, yield* resolve(directory))) return worktreeRefusal;
@@ -260,7 +262,8 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
   const destinationProjectId =
     destination._tag === "new-project" ? null : (destination.project?.id ?? null);
   for (const member of members) {
-    const title = quote(member.title);
+    // The user is looking at the named thread, so only a subagent or a side chat needs its title.
+    const title = member.id === thread.id ? "This thread" : quote(member.title);
     const memberFolder = folderOf(member);
     const instance = input.providerInstances.get(member.providerInstanceId);
     const isClaude = instance?.driver === CLAUDE_DRIVER;
@@ -283,7 +286,7 @@ export const decideThreadMove = Effect.fn("ThreadMoveDestination.decideThreadMov
           memberFolder === undefined
             ? Effect.succeed(true)
             : Effect.map(resolve(memberFolder), (folder) => folder !== threadFolder),
-        `${title} works in another folder${memberFolder === undefined ? "" : `, ${memberFolder}`}.`,
+        `${title} works in another folder${memberFolder === undefined ? "" : `, ${code(memberFolder)}`}.`,
       ],
       [
         instance?.capabilities.sessions.supportsFolderMove !== true,

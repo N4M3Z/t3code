@@ -66,6 +66,7 @@ it.effect.each([
       ordinal: 1,
       ...(owner.startsWith("legacy") ? {} : { cwd: owner.startsWith("moved") ? sibling : cwd }),
     };
+    const targetRunId = owner.endsWith("baseline") ? null : runId;
     const calls: string[] = [];
     const providerThread = {
       id: providerThreadId,
@@ -102,7 +103,7 @@ it.effect.each([
       checkpoint: {
         id: checkpointId,
         scopeId,
-        runId: owner.endsWith("baseline") ? null : runId,
+        runId: targetRunId,
         status: "ready",
         appRunOrdinal: null,
       },
@@ -188,14 +189,7 @@ it.effect.each([
       Effect.provide(layerTest),
     );
     const restoreFiles = owner !== "conversation";
-    const rejected = ![
-      "sibling",
-      "shared-provider",
-      "conversation",
-      "legacy-run",
-      "baseline",
-      "legacy-baseline",
-    ].includes(owner);
+    const rejected = /^(nested|ancestor|provider|moved)/.test(owner);
     if (rejected) {
       const error = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })

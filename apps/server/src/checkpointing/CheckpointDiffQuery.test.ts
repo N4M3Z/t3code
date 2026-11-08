@@ -217,13 +217,9 @@ it.effect("diffs a past turn in the folder its run recorded", () => {
     yield* query.getTurnDiff({ threadId, fromTurnCount: 0, toTurnCount: 1 });
     yield* query.getTurnDiff({ threadId, fromTurnCount: 2, toTurnCount: 3 });
     for (const fromTurnCount of [0, 1]) {
-      const crossFolderError = yield* query
-        .getTurnDiff({ threadId, fromTurnCount, toTurnCount: 3 })
-        .pipe(Effect.flip);
-      assert.instanceOf(crossFolderError, CheckpointRefUnavailableError);
-      assert.deepEqual(
-        { checkpoint: crossFolderError.checkpoint, turnCount: crossFolderError.turnCount },
-        { checkpoint: "from", turnCount: fromTurnCount },
+      assert.deepInclude(
+        yield* query.getTurnDiff({ threadId, fromTurnCount, toTurnCount: 3 }).pipe(Effect.flip),
+        { _tag: "CheckpointRefUnavailableError", checkpoint: "from", turnCount: fromTurnCount },
       );
     }
     assert.deepEqual(

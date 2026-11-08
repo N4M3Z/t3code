@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import * as Struct from "effect/Struct";
 
 import {
   CheckpointId,
@@ -1094,7 +1095,6 @@ export const OrchestrationV2ProviderThread = Schema.Struct({
   ownerNodeId: Schema.NullOr(NodeId),
   nativeThreadRef: Schema.NullOr(OrchestrationV2ProviderRef),
   nativeConversationHeadRef: Schema.NullOr(OrchestrationV2ProviderRef),
-  // Folder whose provider project storage holds the native session; absent means unknown.
   nativeStorageFolder: Schema.optional(TrimmedNonEmptyString),
   status: Schema.Literals(["not_loaded", "idle", "active", "archived", "closed", "error"]),
   firstRunOrdinal: Schema.NullOr(PositiveInt),
@@ -2026,11 +2026,9 @@ export const OrchestrationV2DomainEvent = Schema.Union([
 ]);
 export type OrchestrationV2DomainEvent = typeof OrchestrationV2DomainEvent.Type;
 
-const OrchestrationV2RunFolder = OrchestrationV2Run.mapFields(({ id, cwd, repositoryRoot }) => ({
-  id,
-  cwd,
-  repositoryRoot,
-}));
+const OrchestrationV2RunFolder = OrchestrationV2Run.mapFields(
+  Struct.pick(["id", "cwd", "repositoryRoot"]),
+);
 
 export const OrchestrationV2ThreadProjection = Schema.Struct({
   thread: OrchestrationV2AppThread,

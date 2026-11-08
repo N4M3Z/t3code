@@ -180,12 +180,8 @@ export const make = Effect.gen(function* () {
           ? projection.checkpointScopes.find((scope) => scope.kind === "root_run")
           : undefined;
       const fromCheckpoint =
-        input.fromTurnCount === 0
-          ? undefined
-          : (parentCheckpoint ??
-            readyCheckpoints.find(
-              (checkpoint) => checkpoint.appRunOrdinal === input.fromTurnCount,
-            ));
+        parentCheckpoint ??
+        readyCheckpoints.find((checkpoint) => checkpoint.appRunOrdinal === input.fromTurnCount);
       const fromCheckpointRef =
         input.fromTurnCount === 0
           ? firstScope === undefined

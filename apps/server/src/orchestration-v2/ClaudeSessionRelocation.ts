@@ -29,11 +29,12 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeSessionRecord = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ sessionId: Schema.String })),
 );
+const errnoCode = (error: PlatformError.PlatformError) =>
+  (error.cause as NodeJS.ErrnoException | undefined)?.code;
+const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
+type CopyDirectory = (from: string, to: string) => Effect.Effect<void, PlatformError.PlatformError>;
 
-export function claudeConfigDirRefusal(
-  path: Path.Path,
-  environment: NodeJS.ProcessEnv,
-): string | undefined {
+export function claudeConfigDirRefusal(path: Path.Path, environment: NodeJS.ProcessEnv) {
   const configDir = environment.CLAUDE_CONFIG_DIR;
   return configDir !== undefined && !path.isAbsolute(configDir)
     ? `CLAUDE_CONFIG_DIR ("${configDir}") is not an absolute path, so Claude's configuration folder would change with the working folder.`
@@ -41,10 +42,9 @@ export function claudeConfigDirRefusal(
 }
 
 export function claudeProjectDirName(folder: string, environment: NodeJS.ProcessEnv): string {
-  const override = environment.CLAUDE_CONFIG_DIR
-    ? environment.CLAUDE_CODE_PROJECT_DIR_NAME
-    : undefined;
+  const { CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: override } = environment;
   if (
+    configDir &&
     override !== undefined &&
     /^[A-Za-z0-9_-]{1,64}$/.test(override) &&
     !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(override)
@@ -54,9 +54,7 @@ export function claudeProjectDirName(folder: string, environment: NodeJS.Process
   const name = folder.replace(/[^a-zA-Z0-9]/g, "-");
   if (name.length <= 200) return name;
   let hash = 0;
-  for (let index = 0; index < folder.length; index++) {
-    hash = ((hash << 5) - hash + folder.charCodeAt(index)) | 0;
-  }
+  for (let i = 0; i < folder.length; i++) hash = ((hash << 5) - hash + folder.charCodeAt(i)) | 0;
   return `${name.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
 }
 
@@ -82,28 +80,17 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
     const setAside = Effect.fnUntraced(function* (destination: string) {
       const now = yield* DateTime.now;
       const aside = `${destination}.superseded-${DateTime.toEpochMillis(now)}`;
-      const moved = yield* fileSystem.rename(destination, aside).pipe(
-        Effect.as(true),
-        Effect.catchIf(
-          (error) => error.reason._tag === "NotFound",
-          () => Effect.succeed(false),
+      return yield* fileSystem.rename(destination, aside).pipe(
+        Effect.andThen(
+          fileSystem.utimes(aside, DateTime.toDate(now), DateTime.toDate(now)).pipe(Effect.ignore),
         ),
+        Effect.as(aside),
+        Effect.catchIf(isNotFound, () => Effect.undefined),
       );
-      if (!moved) return undefined;
-      yield* fileSystem
-        .utimes(aside, DateTime.toDate(now), DateTime.toDate(now))
-        .pipe(Effect.ignore);
-      return aside;
     });
     const restore = (aside: string | undefined, destination: string) =>
       aside === undefined ? Effect.void : fileSystem.rename(aside, destination).pipe(Effect.ignore);
-    const copyDirectory: (
-      from: string,
-      to: string,
-    ) => Effect.Effect<void, PlatformError.PlatformError> = Effect.fnUntraced(function* (
-      from: string,
-      to: string,
-    ) {
+    const copyDirectory: CopyDirectory = Effect.fnUntraced(function* (from: string, to: string) {
       yield* fileSystem.makeDirectory(to, { recursive: true, mode: 0o700 });
       for (const entry of yield* fileSystem.readDirectoryEntries(from)) {
         yield* (entry.type === "Directory" ? copyDirectory : fileSystem.copyFile)(
@@ -114,25 +101,23 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
     });
     const renameWithFallbacks = (from: string, to: string) =>
       fileSystem.rename(from, to).pipe(
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            const code = (error.cause as NodeJS.ErrnoException | undefined)?.code;
-            if (code === "EEXIST" || code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY") {
-              const aside = yield* setAside(to).pipe(Effect.orElseSucceed(() => undefined));
-              return yield* fileSystem
-                .rename(from, to)
-                .pipe(Effect.tapError(() => restore(aside, to)));
-            }
-            if (code !== "EXDEV") return yield* error;
-            yield* fileSystem.copyFile(from, to).pipe(
-              Effect.catch((copyError) =>
-                Effect.gen(function* () {
-                  const copyCode = (copyError.cause as NodeJS.ErrnoException | undefined)?.code;
-                  if (copyCode !== "EISDIR" && copyCode !== "ENOTSUP" && copyCode !== "EPERM") {
-                    return yield* copyError;
-                  }
-                  const aside = yield* setAside(to);
-                  yield* copyDirectory(from, to).pipe(
+        Effect.catch((error) => {
+          const code = errnoCode(error);
+          if (code === "EEXIST" || code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY") {
+            return setAside(to).pipe(
+              Effect.orElseSucceed(() => undefined),
+              Effect.flatMap((aside) =>
+                fileSystem.rename(from, to).pipe(Effect.tapError(() => restore(aside, to))),
+              ),
+            );
+          }
+          if (code !== "EXDEV") return Effect.fail(error);
+          return fileSystem.copyFile(from, to).pipe(
+            Effect.catchIf(
+              (copyError) => ["EISDIR", "ENOTSUP", "EPERM"].includes(errnoCode(copyError) ?? ""),
+              () =>
+                Effect.flatMap(setAside(to), (aside) =>
+                  copyDirectory(from, to).pipe(
                     Effect.tapError(() =>
                       aside === undefined
                         ? Effect.void
@@ -140,13 +125,12 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
                             .remove(to, { recursive: true, force: true })
                             .pipe(Effect.ignore, Effect.andThen(restore(aside, to))),
                     ),
-                  );
-                }),
-              ),
-            );
-            yield* fileSystem.remove(from, { recursive: true, force: true });
-          }),
-        ),
+                  ),
+                ),
+            ),
+            Effect.andThen(fileSystem.remove(from, { recursive: true, force: true })),
+          );
+        }),
       );
 
     const relocatedCwd = yield* resolveFolder(input.newFolder);
@@ -162,11 +146,8 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
     if (!sourcePresent && !(yield* fileSystem.exists(newFile))) return;
     if (sourcePresent && oldDir !== newDir) {
       yield* fileSystem.makeDirectory(newDir, { recursive: true, mode: 0o700 });
-      const [oldInfo, newInfo] = yield* Effect.all([
-        fileSystem.stat(oldDir),
-        fileSystem.stat(newDir),
-      ]);
-      const sameDirectory = oldInfo.dev === newInfo.dev && Equal.equals(oldInfo.ino, newInfo.ino);
+      const [from, to] = yield* Effect.all([fileSystem.stat(oldDir), fileSystem.stat(newDir)]);
+      const sameDirectory = from.dev === to.dev && Equal.equals(from.ino, to.ino);
       const superseded = sameDirectory ? undefined : yield* setAside(newFile);
       yield* renameWithFallbacks(oldFile, newFile).pipe(
         Effect.tapError(() => restore(superseded, newFile)),
@@ -183,10 +164,7 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
         path.join(oldDir, input.sessionId),
         path.join(newDir, input.sessionId),
       ).pipe(
-        Effect.catchIf(
-          (error) => error.reason._tag === "NotFound",
-          () => Effect.void,
-        ),
+        Effect.catchIf(isNotFound, () => Effect.void),
         Effect.tapError((cause) =>
           Effect.logWarning("orchestration-v2.claude-relocation.subagent-folder-failed", { cause }),
         ),
@@ -194,13 +172,12 @@ export const relocateClaudeTranscript = Effect.fn("ClaudeSessionRelocation.reloc
     }
     // Like Claude, end a torn last line before appending; a whole last line that is the record
     // needs only its newline.
-    if (!`\n${contents}`.endsWith(`\n${record}\n`)) {
+    const tail = `\n${contents}`;
+    if (!tail.endsWith(`\n${record}\n`)) {
       yield* fileSystem
         .writeFileString(
           newFile,
-          `\n${contents}`.endsWith(`\n${record}`)
-            ? "\n"
-            : `${/[^\n]$/.test(contents) ? "\n" : ""}${record}\n`,
+          tail.endsWith(`\n${record}`) ? "\n" : `${/[^\n]$/.test(contents) ? "\n" : ""}${record}\n`,
           { flag: "a" },
         )
         .pipe(
@@ -245,12 +222,11 @@ export const relocateClaudeSessionStorage = Effect.fn(
   const providerThread = providerThreads.find((row) => row.id === request.providerThreadId);
   if (providerThread === undefined) return;
   const now = yield* DateTime.now;
-  const ids = yield* IdAllocator.IdAllocatorV2;
   const { committed } = yield* (yield* EventSink.EventSinkV2).writeIfProviderThreadUnchanged({
     expected: providerThread,
     events: [
       {
-        id: yield* ids.allocate.event({ threadId }),
+        id: yield* (yield* IdAllocator.IdAllocatorV2).allocate.event({ threadId }),
         type: "provider-thread.updated",
         threadId,
         driver: providerThread.driver,

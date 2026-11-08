@@ -39,36 +39,19 @@ it.effect("refuses a CLAUDE_CONFIG_DIR that is not an absolute path", () =>
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+const repo = "/Users/me/repo";
+const override = (name: string) => ({ ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: name });
+
 it.each([
-  { folder: "/Users/me/Repo.v2", environment: {}, name: "-Users-me-Repo-v2" },
+  ["/Users/me/Repo.v2", {}, "-Users-me-Repo-v2"],
   // Golden value from the SDK's own projectDirName (sdk.mjs `Fu`).
-  { folder: `/${"a".repeat(250)}`, environment: {}, name: `-${"a".repeat(199)}-feo44x` },
-  {
-    folder: "/Users/me/repo",
-    environment: { ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: "my_proj-1" },
-    name: "my_proj-1",
-  },
-  {
-    folder: "/Users/me/repo",
-    environment: { CLAUDE_CODE_PROJECT_DIR_NAME: "my_proj-1" },
-    name: "-Users-me-repo",
-  },
-  {
-    folder: "/Users/me/repo",
-    environment: { ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: "a/b" },
-    name: "-Users-me-repo",
-  },
-  {
-    folder: "/Users/me/repo",
-    environment: { ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: "COM1" },
-    name: "-Users-me-repo",
-  },
-  {
-    folder: "/Users/me/repo",
-    environment: { ...withConfig, CLAUDE_CODE_PROJECT_DIR_NAME: "x".repeat(65) },
-    name: "-Users-me-repo",
-  },
-])("names Claude's project folder for $folder as $name", ({ folder, environment, name }) => {
+  [`/${"a".repeat(250)}`, {}, `-${"a".repeat(199)}-feo44x`],
+  [repo, override("my_proj-1"), "my_proj-1"],
+  [repo, { CLAUDE_CODE_PROJECT_DIR_NAME: "my_proj-1" }, "-Users-me-repo"],
+  [repo, override("a/b"), "-Users-me-repo"],
+  [repo, override("COM1"), "-Users-me-repo"],
+  [repo, override("x".repeat(65)), "-Users-me-repo"],
+] as const)("names Claude's project folder for %s with %o", (folder, environment, name) => {
   assert.equal(ClaudeSessionRelocation.claudeProjectDirName(folder, environment), name);
 });
 
@@ -213,166 +196,126 @@ it.effect("retries an occupied rename when the destination cannot be set aside",
 );
 
 it.effect.each([
-  { name: "after the transcript rename", lost: "subagent-folder", written: 0 },
-  { name: "before the relocated record", lost: "record", written: 0 },
-  { name: "partway through the relocated record", lost: "record", written: 20 },
-  { name: "before the relocated record's newline", lost: "record", written: -1 },
-])("finishes a move the process lost $name when the effect replays", ({ lost, written }) =>
-  Effect.gen(function* () {
-    const context = yield* setup();
-    const { fileSystem, path, oldDir, newDir, oldFile, newFile } = context;
-    const oldSubagents = path.join(oldDir, sessionId);
-    const crashing = FileSystem.FileSystem.of({
-      ...fileSystem,
-      rename: (from, to) =>
-        lost === "subagent-folder" && from === oldSubagents
-          ? Effect.die("process lost")
-          : fileSystem.rename(from, to),
-      writeFileString: (file, data, options) =>
-        lost === "record" && file === newFile
-          ? fileSystem
-              .writeFileString(file, data.slice(0, written), options)
-              .pipe(Effect.andThen(Effect.die("process lost")))
-          : fileSystem.writeFileString(file, data, options),
-    });
-
-    const exit = yield* relocate(context).pipe(
-      Effect.provideService(FileSystem.FileSystem, crashing),
-      Effect.exit,
-    );
-    assert.equal(exit._tag, "Failure");
-    assert.isTrue(yield* fileSystem.exists(newFile));
-    assert.isFalse(yield* fileSystem.exists(oldFile));
-    assert.equal(yield* fileSystem.exists(oldSubagents), lost === "subagent-folder");
-
-    yield* relocate(context);
-    yield* relocate(context);
-
-    const relocatedCwd = (yield* fileSystem.realPath(context.newFolder)).normalize("NFC");
-    const record = `${JSON.stringify({ type: "relocated", sessionId, relocatedCwd })}\n`;
-    const fragment = written === 0 ? "" : `${record.slice(0, written)}\n`;
-    assert.equal(
-      yield* fileSystem.readFileString(newFile),
-      `${transcript}${fragment}${fragment === record ? "" : record}`,
-    );
-    assert.isTrue(yield* fileSystem.exists(path.join(newDir, sessionId, "agent-1.jsonl")));
-    assert.isFalse(yield* fileSystem.exists(oldSubagents));
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
-
-it.effect.each([
-  { name: "records the new folder after the transcript moves", denied: undefined, committed: true },
-  {
-    name: "keeps the recorded folder until the transcript moves",
-    denied: "transcript",
-    committed: true,
-  },
-  {
-    name: "keeps the recorded folder until the subagents move",
-    denied: "subagents",
-    committed: true,
-  },
-  { name: "keeps the recorded folder until the record lands", denied: "record", committed: true },
-  {
-    name: "fails when the provider thread changed during the move",
-    denied: undefined,
-    committed: false,
-  },
-])("$name", ({ denied, committed }) =>
-  Effect.gen(function* () {
-    const context = yield* setup();
-    const { fileSystem, path, oldDir, newDir, oldFile, newFile } = context;
-    const threadId = ThreadId.make("thread:claude-relocation");
-    const now = yield* DateTime.now;
-    const providerThread: OrchestrationV2ProviderThread = {
-      id: ProviderThreadId.make("provider-thread:claude-relocation"),
-      driver: ProviderDriverKind.make("claudeAgent"),
-      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
-      providerSessionId: null,
-      appThreadId: threadId,
-      ownerNodeId: null,
-      nativeThreadRef: {
+  { name: "writes the new folder once the transcript moved" },
+  { name: "fails when the provider thread changed", committed: false },
+  { name: "denied transcript rename", at: "transcript", fault: "denied" },
+  { name: "denied subagent rename", at: "subagents", fault: "denied" },
+  { name: "denied record append", at: "record", fault: "denied" },
+  { name: "lost after the transcript rename", at: "subagents", fault: "lost" },
+  { name: "lost before the relocated record", at: "record", fault: "lost" },
+  { name: "lost partway through the record", at: "record", fault: "lost", written: 20 },
+  { name: "lost before the record's newline", at: "record", fault: "lost", written: -1 },
+])(
+  "relocates and records the storage folder: $name",
+  ({ committed = true, at, fault, written = 0 }) =>
+    Effect.gen(function* () {
+      const context = yield* setup();
+      const { fileSystem, path, oldDir, newDir, oldFile, newFile } = context;
+      const oldSubagents = path.join(oldDir, sessionId);
+      const threadId = ThreadId.make("thread:claude-relocation");
+      const now = yield* DateTime.now;
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: ProviderThreadId.make("provider-thread:claude-relocation"),
         driver: ProviderDriverKind.make("claudeAgent"),
-        strength: "strong",
-        nativeId: sessionId,
-      },
-      nativeConversationHeadRef: null,
-      nativeStorageFolder: context.oldFolder,
-      status: "idle",
-      firstRunOrdinal: null,
-      lastRunOrdinal: null,
-      handoffIds: [],
-      forkedFrom: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const writes: Array<OrchestrationV2ProviderThread | undefined> = [];
-    let denying = denied !== undefined;
-    const flaky = FileSystem.FileSystem.of({
-      ...fileSystem,
-      rename: (from, to) =>
-        denying &&
-        denied !== "record" &&
-        from === (denied === "transcript" ? oldFile : path.join(oldDir, sessionId))
-          ? Effect.fail(errno("EACCES", "rename", from))
-          : fileSystem.rename(from, to),
-      writeFileString: (file, data, options) =>
-        denying && denied === "record"
-          ? Effect.fail(errno("EACCES", "open", file))
-          : fileSystem.writeFileString(file, data, options),
-    });
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        providerSessionId: null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          strength: "strong",
+          nativeId: sessionId,
+        },
+        nativeConversationHeadRef: null,
+        nativeStorageFolder: context.oldFolder,
+        status: "idle",
+        firstRunOrdinal: null,
+        lastRunOrdinal: null,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const writes: Array<string | undefined> = [];
+      let faulty = at !== undefined;
+      const fail = (method: string, file: string) =>
+        fault === "lost" ? Effect.die("process lost") : Effect.fail(errno("EACCES", method, file));
+      const faultedRename =
+        at === "transcript" ? oldFile : at === "subagents" ? oldSubagents : undefined;
+      const flaky = FileSystem.FileSystem.of({
+        ...fileSystem,
+        rename: (from, to) =>
+          faulty && from === faultedRename ? fail("rename", from) : fileSystem.rename(from, to),
+        writeFileString: (file, data, options) =>
+          faulty && at === "record"
+            ? fileSystem
+                .writeFileString(file, data.slice(0, written), options)
+                .pipe(Effect.andThen(fail("open", file)))
+            : fileSystem.writeFileString(file, data, options),
+      });
 
-    const run = ClaudeSessionRelocation.relocateClaudeSessionStorage(threadId, {
-      type: "provider-session.relocate-storage",
-      driver: providerThread.driver,
-      providerInstanceId: providerThread.providerInstanceId,
-      providerThreadId: providerThread.id,
-      nativeSessionId: sessionId,
-      oldFolder: context.oldFolder,
-      newFolder: context.newFolder,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, flaky),
-      Effect.provideService(HostProcess.Environment, {}),
-      Effect.provideService(HostProcess.Platform, "darwin"),
-      Effect.provide(
-        Layer.mergeAll(
-          ServerSettings.layerTest({
-            providerInstances: {
-              [providerThread.providerInstanceId]: {
-                driver: providerThread.driver,
-                config: { homePath: context.configDir },
+      const run = ClaudeSessionRelocation.relocateClaudeSessionStorage(threadId, {
+        type: "provider-session.relocate-storage",
+        driver: providerThread.driver,
+        providerInstanceId: providerThread.providerInstanceId,
+        providerThreadId: providerThread.id,
+        nativeSessionId: sessionId,
+        oldFolder: context.oldFolder,
+        newFolder: context.newFolder,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, flaky),
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest({
+              providerInstances: {
+                [providerThread.providerInstanceId]: {
+                  driver: providerThread.driver,
+                  config: { homePath: context.configDir },
+                },
               },
-            },
-          }),
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            getThreadRecords: () => Effect.succeed({ providerThreads: [providerThread] }) as never,
-          }),
-          Layer.mock(EventSink.EventSinkV2)({
-            writeIfProviderThreadUnchanged: ({ events }) =>
-              Effect.sync(() => {
-                const [event] = events;
-                writes.push(event?.type === "provider-thread.updated" ? event.payload : undefined);
-                return { committed, storedEvents: [] };
-              }),
-          }),
-          IdAllocator.layer,
+            }),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({
+              getThreadRecords: () =>
+                Effect.succeed({ providerThreads: [providerThread] }) as never,
+            }),
+            Layer.mock(EventSink.EventSinkV2)({
+              writeIfProviderThreadUnchanged: ({ events }) =>
+                Effect.sync(() => {
+                  const [event] = events;
+                  writes.push(
+                    event?.type === "provider-thread.updated"
+                      ? event.payload.nativeStorageFolder
+                      : undefined,
+                  );
+                  return { committed, storedEvents: [] };
+                }),
+            }),
+            IdAllocator.layer,
+          ),
         ),
-      ),
-      Effect.exit,
-    );
-    if (denying) {
-      assert.equal((yield* run)._tag, "Failure");
-      assert.deepEqual(writes, []);
-      denying = false;
-    }
+        Effect.exit,
+      );
+      if (faulty) {
+        assert.equal((yield* run)._tag, "Failure");
+        assert.deepEqual(writes, []);
+        assert.equal(yield* fileSystem.exists(newFile), at !== "transcript");
+        assert.equal(yield* fileSystem.exists(oldFile), at === "transcript");
+        assert.equal(yield* fileSystem.exists(oldSubagents), at !== "record");
+        faulty = false;
+      }
 
-    const exit = yield* run;
-    assert.equal(exit._tag === "Failure", !committed);
-    assert.deepEqual(
-      writes.map((payload) => payload?.nativeStorageFolder),
-      [context.newFolder],
-    );
-    assert.equal(lastRecord(yield* fileSystem.readFileString(newFile)).type, "relocated");
-    assert.isTrue(yield* fileSystem.exists(path.join(newDir, sessionId, "agent-1.jsonl")));
-  }).pipe(Effect.provide(NodeServices.layer)),
+      assert.equal((yield* run)._tag === "Failure", !committed);
+      assert.deepEqual(writes, [context.newFolder]);
+      const relocatedCwd = (yield* fileSystem.realPath(context.newFolder)).normalize("NFC");
+      const record = `${JSON.stringify({ type: "relocated", sessionId, relocatedCwd })}\n`;
+      const fragment = written === 0 ? "" : `${record.slice(0, written)}\n`;
+      const contents = `${transcript}${fragment}${fragment === record ? "" : record}`;
+      assert.equal(yield* fileSystem.readFileString(newFile), contents);
+      assert.isTrue(yield* fileSystem.exists(path.join(newDir, sessionId, "agent-1.jsonl")));
+      assert.isFalse(yield* fileSystem.exists(oldSubagents));
+      yield* run;
+      assert.equal(yield* fileSystem.readFileString(newFile), contents);
+    }).pipe(Effect.provide(NodeServices.layer)),
 );

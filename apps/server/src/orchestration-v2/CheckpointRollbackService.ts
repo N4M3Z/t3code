@@ -235,16 +235,13 @@ export const layer: Layer.Layer<
         }
       }
 
+      const runIds = [checkpoint, ...staleCheckpoints].flatMap((target) =>
+        target.runId === null ? [] : [target.runId],
+      );
       const { runs } = yield* projections.getThreadRecords(
         input.threadId,
         ["runs"],
-        checkpoint.runId === null
-          ? undefined
-          : {
-              runIds: [checkpoint, ...staleCheckpoints].flatMap((target) =>
-                target.runId === null ? [] : [target.runId],
-              ),
-            },
+        checkpoint.runId === null ? undefined : { runIds },
       );
       const runCwd = (target: Pick<OrchestrationV2Checkpoint, "runId">) =>
         runs.find((run) => (target.runId === null ? run.ordinal === 1 : run.id === target.runId))

@@ -411,7 +411,6 @@ export interface OrchestratorV2Shape {
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) => Effect.Effect<ProjectionRecords<K>, OrchestratorV2Error>;
-  /** Whether a live session of the thread reports background work; a failed probe counts. */
   readonly threadHasBackgroundWork: (
     threadId: ThreadId,
   ) => Effect.Effect<boolean, OrchestratorV2Error>;
@@ -12352,23 +12351,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       if (command.restoreFiles !== false) {
-        const isolated = yield* isCheckpointRestoreIsolated(
-          projection.thread,
-          {
-            cwd:
-              projection.runs.find((run) =>
-                targetCheckpoint.runId === null
-                  ? run.ordinal === 1
-                  : run.id === targetCheckpoint.runId,
-              )?.cwd ?? targetScope.cwd,
-          },
-          {
-            projects,
-            path,
-            fileSystem,
-            projections: projectionStore,
-          },
-        ).pipe(
+        const restoreRun = projection.runs.find((run) =>
+          targetCheckpoint.runId === null ? run.ordinal === 1 : run.id === targetCheckpoint.runId,
+        );
+        const restoreScope = { cwd: restoreRun?.cwd ?? targetScope.cwd };
+        const isolated = yield* isCheckpointRestoreIsolated(projection.thread, restoreScope, {
+          projects,
+          path,
+          fileSystem,
+          projections: projectionStore,
+        }).pipe(
           Effect.mapError(
             (cause) =>
               new OrchestratorDispatchError({

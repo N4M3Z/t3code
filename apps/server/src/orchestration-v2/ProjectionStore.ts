@@ -3,6 +3,7 @@ import { pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
+import * as Struct from "effect/Struct";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { makeThreadFind } from "./ThreadFind.ts";
 import type {
@@ -1386,22 +1387,20 @@ const isMoveReceipt = (item: ForkHistoryItem) =>
   item.runId === null && item.type === "system_notice" && item.previousFolder !== undefined;
 
 // Same boundary as covering_receipt in readProjection's fork window SQL.
-function forkBoundaryOrdinal(input: {
-  readonly items: ReadonlyArray<ForkHistoryItem>;
-  readonly runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>;
-  readonly sourceRunOrdinal: number;
-}): number {
+function forkBoundaryOrdinal(
+  items: ReadonlyArray<ForkHistoryItem>,
+  runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>,
+  sourceRunOrdinal: number,
+): number {
   let boundaryRun = -1;
   let boundary = -1;
-  for (const item of input.items) {
-    const run = item.runId === null ? undefined : input.runOrdinalById.get(item.runId);
-    if (run === undefined || run > input.sourceRunOrdinal || run < boundaryRun) continue;
+  for (const item of items) {
+    const run = item.runId === null ? undefined : runOrdinalById.get(item.runId);
+    if (run === undefined || run > sourceRunOrdinal || run < boundaryRun) continue;
     boundaryRun = run;
     boundary = item.ordinal;
   }
-  return (
-    input.items.find((item) => isMoveReceipt(item) && item.ordinal > boundary)?.ordinal ?? boundary
-  );
+  return items.find((item) => isMoveReceipt(item) && item.ordinal > boundary)?.ordinal ?? boundary;
 }
 
 function isTurnItemAtOrBeforeRun(input: {
@@ -1411,9 +1410,7 @@ function isTurnItemAtOrBeforeRun(input: {
   readonly runOrdinalById: ReadonlyMap<NonNullable<OrchestrationV2TurnItem["runId"]>, number>;
   readonly sourceRunOrdinal: number;
 }): boolean {
-  if (input.item.ordinal > input.boundaryOrdinal) {
-    return false;
-  }
+  if (input.item.ordinal > input.boundaryOrdinal) return false;
   if (input.item.runId === null) {
     return input.historyOrigin === "v1_import" || isMoveReceipt(input.item);
   }
@@ -1434,11 +1431,7 @@ function visibleTurnItemsThroughRun(input: {
   const runOrdinalById = new Map(input.sourceProjection.runs.map((run) => [run.id, run.ordinal]));
   const boundaryOrdinal =
     input.boundaryOrdinal ??
-    forkBoundaryOrdinal({
-      items: input.sourceProjection.turnItems,
-      runOrdinalById,
-      sourceRunOrdinal: sourceRun.ordinal,
-    });
+    forkBoundaryOrdinal(input.sourceProjection.turnItems, runOrdinalById, sourceRun.ordinal);
   const inheritedPrefix = input.sourceProjection.visibleTurnItems
     .filter(
       (row) => row.item.threadId !== input.sourceProjection.thread.id || row.item.type === "fork",
@@ -1489,13 +1482,7 @@ function runFoldersFor(
   const runFolders = runs.flatMap((run) =>
     run.cwd === undefined || !runIds.has(run.id)
       ? []
-      : [
-          {
-            id: run.id,
-            cwd: run.cwd,
-            ...(run.repositoryRoot === undefined ? {} : { repositoryRoot: run.repositoryRoot }),
-          },
-        ],
+      : [Struct.pick(run, ["id", "cwd", "repositoryRoot"])],
   );
   return runFolders.length === 0 ? {} : { runFolders };
 }
@@ -2992,11 +2979,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                             AND json_extract(source_thread.payload_json, '$.historyOrigin') = 'v1_import'
                         )
                       )
-                      OR (
-                        item.run_id IS NULL
-                        AND item.type = 'system_notice'
-                        AND json_extract(item.payload_json, '$.previousFolder') IS NOT NULL
-                      )
+                      OR (item.run_id IS NULL AND item.type = 'system_notice'
+                        AND json_extract(item.payload_json, '$.previousFolder') IS NOT NULL)
                       OR run.ordinal <= (
                         SELECT required_run.ordinal
                         FROM orchestration_v2_projection_runs AS required_run
@@ -3942,15 +3926,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     ) AS ordinal
                   ), covering_receipt AS (
                     SELECT COALESCE(
-                      (
-                        SELECT MIN(ordinal)
-                        FROM orchestration_v2_projection_turn_items
-                        WHERE thread_id = ${forkedFrom.threadId}
-                          AND run_id IS NULL
+                      (SELECT MIN(ordinal) FROM orchestration_v2_projection_turn_items
+                        WHERE thread_id = ${forkedFrom.threadId} AND run_id IS NULL
                           AND type = 'system_notice'
                           AND json_extract(payload_json, '$.previousFolder') IS NOT NULL
-                          AND ordinal > (SELECT ordinal FROM effective_boundary)
-                      ),
+                          AND ordinal > (SELECT ordinal FROM effective_boundary)),
                       (SELECT ordinal FROM effective_boundary)
                     ) AS ordinal
                   )
@@ -4045,13 +4025,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           // A source window's SQL already stops at the fork boundary.
           boundaryOrdinal: sourceWindow === undefined ? undefined : Number.POSITIVE_INFINITY,
         });
-        const runIds = new Set(visibleTurnItems.map((row) => row.item.runId));
         return {
           ...projection,
           visibleTurnItems,
           ...runFoldersFor(
             [...sourceProjection.runs, ...(sourceProjection.runFolders ?? [])],
-            runIds,
+            new Set(visibleTurnItems.map((row) => row.item.runId)),
           ),
         };
       },
@@ -5889,11 +5868,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         if (sourceRun !== undefined) {
           const ordinals = new Map(source.records.runs.map((run) => [run.id, run.ordinal]));
           const sourceItems = source.local.map((row) => row.item);
-          const boundaryOrdinal = forkBoundaryOrdinal({
-            items: sourceItems,
-            runOrdinalById: ordinals,
-            sourceRunOrdinal: sourceRun.ordinal,
-          });
+          const boundaryOrdinal = forkBoundaryOrdinal(sourceItems, ordinals, sourceRun.ordinal);
           inherited = [
             ...source.visible.filter(
               (row) => row.item.threadId !== fork.threadId || row.item.type === "fork",
@@ -6062,13 +6037,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ...row,
               position,
             }));
-            const runIds = new Set(pageItems.map((row) => row.item.runId));
             return {
               snapshotSequence,
               items: conversationOnly
                 ? pageItems.filter((row) => isConversationHistoryItem(row.item))
                 : pageItems,
-              ...runFoldersFor(index.runs, runIds),
+              ...runFoldersFor(index.runs, new Set(pageItems.map((row) => row.item.runId))),
               nextCursor: bounded.hasMoreHistory ? bounded.nextCursor : page.nextCursor,
               hasMoreHistory: bounded.hasMoreHistory || page.hasMoreHistory,
             };

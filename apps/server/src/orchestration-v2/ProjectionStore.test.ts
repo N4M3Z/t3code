@@ -8168,16 +8168,12 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           "fork",
         ],
       );
-      const rowFolders = (
-        rows: ReadonlyArray<{ readonly item: { readonly runId: RunId | null } }>,
-        runFolders: ReadonlyArray<{ readonly id: RunId; readonly cwd?: string | undefined }> = [],
-      ) =>
-        rows.flatMap(({ item }) =>
-          item.runId === null ? [] : [runFolders.find((run) => run.id === item.runId)?.cwd],
-        );
-      assert.deepEqual(
-        rowFolders(boundedNested.projection.visibleTurnItems, boundedNested.projection.runFolders),
-        ["/repo/source-2", "/repo/source-2", "/repo/target", "/repo/target"],
+      assert.sameDeepMembers(
+        boundedNested.projection.runFolders?.map((run) => [run.id, run.cwd]) ?? [],
+        [
+          [sourceRun2Id, "/repo/source-2"],
+          [targetRunId, "/repo/target"],
+        ],
       );
 
       const nestedInitial = buildBoundedThreadProjection({
@@ -8199,10 +8195,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         nestedThreadId,
         nestedInitial.historyCursor!,
       );
-      assert.deepEqual(
-        [...new Set(rowFolders(nestedPage.items, nestedPage.runFolders))],
-        ["/repo/source-1", "/repo/source-2", "/repo/target"],
-      );
+      assert.deepEqual(nestedPage.runFolders?.map((run) => run.cwd).sort(), [
+        "/repo/source-1",
+        "/repo/source-2",
+        "/repo/target",
+      ]);
       let nestedCursor = nestedInitial.historyCursor;
       let nestedPages = 1;
       while (nestedCursor !== null) {

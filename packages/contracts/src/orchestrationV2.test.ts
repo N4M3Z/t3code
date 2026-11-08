@@ -107,6 +107,11 @@ describe("orchestration V2 contracts", () => {
     });
     const known = item("item-known", "system_notice", { message: "Hello" });
     const future = item("item-future", "hologram", { beam: "ref-1" });
+    const notice = item("item-notice", "system_notice", { message: "Moved", previousFolder: "/a" });
+    expect(decodeOrchestrationV2TurnItemJson(known)).not.toHaveProperty("previousFolder");
+    expect(encodeOrchestrationV2TurnItemJson(decodeOrchestrationV2TurnItemJson(notice))).toEqual(
+      notice,
+    );
     const projected = (position: number, turnItem: { readonly id: string }) => ({
       position,
       visibility: "local",
@@ -328,33 +333,6 @@ describe("orchestration V2 contracts", () => {
     expect(explicit.sessions.supportsFolderMove).toBe(true);
   });
 
-  it("keeps a system notice's previous folder in stored JSON and decodes notices without one", () => {
-    const stored = {
-      id: "notice",
-      threadId: "thread-1",
-      runId: null,
-      nodeId: null,
-      providerThreadId: null,
-      providerTurnId: null,
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: 3,
-      status: "completed",
-      title: null,
-      startedAt: DateTime.formatIso(now),
-      completedAt: DateTime.formatIso(now),
-      updatedAt: DateTime.formatIso(now),
-      type: "system_notice",
-      message: "The next turn runs in /repo/b.",
-    };
-    expect(decodeOrchestrationV2TurnItemJson(stored)).not.toHaveProperty("previousFolder");
-    const moved = decodeOrchestrationV2TurnItemJson({ ...stored, previousFolder: "/repo/a" });
-    expect(encodeOrchestrationV2TurnItemJson(moved)).toEqual({
-      ...stored,
-      previousFolder: "/repo/a",
-    });
-  });
-
   it.each(["  indented prompt\n", "\n \t\n"])(
     "preserves workflow prompt and result %j in stored and wire JSON",
     (preview) => {
@@ -453,14 +431,10 @@ describe("orchestration V2 contracts", () => {
     expect(providerThread.contextUsage).toBeNull();
     expect(providerThread.nativeMetadata).toBeNull();
     expect(providerThread).not.toHaveProperty("nativeStorageFolder");
+    const moved = { ...providerThread, nativeStorageFolder: "/workspace/project" };
     expect(
-      decodeOrchestrationV2ProviderThreadJson(
-        encodeOrchestrationV2ProviderThreadJson({
-          ...providerThread,
-          nativeStorageFolder: "/workspace/project",
-        }),
-      ).nativeStorageFolder,
-    ).toBe("/workspace/project");
+      decodeOrchestrationV2ProviderThreadJson(encodeOrchestrationV2ProviderThreadJson(moved)),
+    ).toMatchObject({ nativeStorageFolder: "/workspace/project" });
 
     const runtimeThread = decodeOrchestrationV2ProviderThread({
       id: "provider-thread-2",

@@ -75,6 +75,14 @@ it.effect.each([
     reads: 1,
   },
   {
+    name: "ignores later runs' scope events when the earliest session run's own is pruned",
+    providerThreads: [providerThread("a")],
+    attempts: [attempt(1, "a"), attempt(3, "a")],
+    events: events.slice(0, 3),
+    folders: [],
+    reads: 1,
+  },
+  {
     name: "uses the row's earliest surviving scope event when its attempts predate nativeThreadId",
     providerThreads: [providerThread("a")],
     attempts: [attempt(1, undefined, otherRow), attempt(2), attempt(3), attempt(4)],
@@ -103,9 +111,9 @@ it.effect.each([
     ],
     reads: 1,
   },
-])("$name", ({ providerThreads, attempts, folders, reads }) =>
+])("$name", ({ providerThreads, attempts, folders, reads, events: rowEvents = events }) =>
   Effect.gen(function* () {
-    const read = vi.fn<EventStore.EventStoreV2Shape["read"]>(() => Stream.fromIterable(events));
+    const read = vi.fn<EventStore.EventStoreV2Shape["read"]>(() => Stream.fromIterable(rowEvents));
     const resolved = yield* nativeStorageFolders({ read }, ThreadId.make("thread"), {
       runs,
       attempts,

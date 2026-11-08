@@ -42,9 +42,10 @@ function nativeStorageFolder(input: {
   );
   const runs = [...input.runs].sort((left, right) => left.ordinal - right.ordinal);
   const scopes = runs.flatMap((run) => rootScopes.get(run.id) ?? []);
+  const first = runs.find((run) => sessionRunIds.has(run.id));
   return (
-    runs.find((run) => sessionRunIds.has(run.id))?.cwd ??
-    scopes.find((scope) => scope.runId !== null && sessionRunIds.has(scope.runId))?.cwd ??
+    first?.cwd ??
+    (first && rootScopes.get(first.id)?.cwd) ??
     (input.attempts.some(
       (attempt) =>
         attempt.providerThreadId === providerThread.id && attempt.nativeThreadId !== undefined,

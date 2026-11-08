@@ -147,10 +147,10 @@ it.effect.each([
       { threadId: "side", ordinal: 3, runId: null, previousFolder: from },
     ]);
     assert.isTrue(notices.every((item) => item.startedAt === movedAt));
-    assert.include(notices[0]?.message ?? "", `The next turn runs in ${receipt.folder}.`);
+    assert.include(notices[0]?.message ?? "", `The next turn runs in \`${receipt.folder}\`.`);
     assert.equal(
       notices[1]?.message,
-      `Moved with t. The next turn runs in ${to}. The receipt in t lists the details.`,
+      `Moved with t.\nThe next turn runs in \`${to}\`.\nThe receipt in t lists the details.`,
     );
     expect(effects).toMatchObject([
       { threadId: "t", request: { type: "provider-session.detach" } },

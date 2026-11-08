@@ -335,7 +335,7 @@ it.layer(layerTest)("ThreadMoveService", (it) => {
       );
       const message = receipt?.type === "system_notice" ? receipt.message : "";
       assert.equal(receipt?.type === "system_notice" ? receipt.previousFolder : null, at("w"));
-      assert.include(message, `The next turn runs in ${at("plain")}.`);
+      assert.include(message, `The next turn runs in \`${at("plain")}\`.`);
       assert.include(message, `"${forkId}"`);
       assert.deepEqual(yield* outboxOf(threadId), ["scheduled-tasks.move"]);
     }),

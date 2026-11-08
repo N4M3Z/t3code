@@ -17,6 +17,7 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import {
   moveReceiptTurnItem,
+  threadMoveMemberNotice,
   threadMoveReceiptMessage,
   type ThreadMoveReceiptInput,
 } from "./ThreadMoveReceipt.ts";
@@ -148,7 +149,7 @@ export const planThreadMove = Effect.fn("ThreadMovePlan.planThreadMove")(functio
         message:
           index === 0
             ? threadMoveReceiptMessage(input.receipt)
-            : `Moved with ${threadTitle}. The next turn runs in ${input.folder}. The receipt in ${threadTitle} lists the details.`,
+            : threadMoveMemberNotice(threadTitle, input.folder),
       }),
     });
     effect(threadId, {

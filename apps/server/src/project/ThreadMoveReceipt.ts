@@ -3,6 +3,9 @@ import type * as DateTime from "effect/DateTime";
 
 const quote = (title: string) => `"${title}"`;
 
+/** Inline code, so the client renders the path as a file link. */
+const receiptPath = (path: string) => (path.includes("`") ? `\`\` ${path} \`\`` : `\`${path}\``);
+
 export interface ThreadMoveReceiptInput {
   readonly folder: string;
   readonly previousFolder: string;
@@ -20,6 +23,7 @@ export interface ThreadMoveReceiptInput {
   } | null;
 }
 
+/** The first line is the heading the client shows; the lines after it are the details. */
 export function threadMoveReceiptMessage(input: ThreadMoveReceiptInput): string {
   const left = input.leftFolder;
   const working =
@@ -30,13 +34,15 @@ export function threadMoveReceiptMessage(input: ThreadMoveReceiptInput): string 
           ...left.otherThreads.map(quote),
         ];
   const pullRequest = input.pullRequest;
+  const previousFolder = receiptPath(input.previousFolder);
   return [
-    `Moved from project ${quote(input.previousProject)} to project ${quote(input.project)}.`,
-    `The next turn runs in ${input.folder}.`,
-    `The thread worked in ${input.previousFolder}.`,
+    `Moved to ${input.project}.`,
+    `The thread came from project ${quote(input.previousProject)}.`,
+    `The next turn runs in ${receiptPath(input.folder)}.`,
+    `The thread worked in ${previousFolder}.`,
     left !== null &&
       (left.exists
-        ? `The folder ${input.previousFolder} stays on disk with all its files until you remove it.`
+        ? `The folder ${previousFolder} stays on disk with all its files until you remove it.`
         : "The folder no longer exists."),
     left !== null &&
       (working.length === 0
@@ -49,6 +55,14 @@ export function threadMoveReceiptMessage(input: ThreadMoveReceiptInput): string 
   ]
     .filter((line) => typeof line === "string")
     .join("\n");
+}
+
+export function threadMoveMemberNotice(threadTitle: string, folder: string): string {
+  return [
+    `Moved with ${threadTitle}.`,
+    `The next turn runs in ${receiptPath(folder)}.`,
+    `The receipt in ${threadTitle} lists the details.`,
+  ].join("\n");
 }
 
 export function moveReceiptTurnItem(input: {

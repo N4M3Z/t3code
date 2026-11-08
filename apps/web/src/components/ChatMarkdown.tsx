@@ -240,7 +240,7 @@ interface ChatMarkdownProps {
   onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
   onRunShellCommand?: ((command: string) => void) | undefined;
   imageBaseDir?: string | undefined;
-  /** The row's run folder; relative file links resolve there exactly, with no workspace lookup. */
+  /** The row's run folder; file links resolve there, with no workspace lookup unless it is cwd. */
   fileLinkBaseDir?: string | undefined;
   workspaceMutationId?: string | null | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
@@ -503,7 +503,7 @@ function useChatMarkdownState({
   sourceControlMediaRepository,
 }: ChatMarkdownProps) {
   const imageBaseDir = fileLinkBaseDir ?? documentBaseDir;
-  const exact = fileLinkBaseDir !== undefined;
+  const exact = fileLinkBaseDir !== undefined && fileLinkBaseDir !== cwd;
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
   const mediaRequestId = useRef(0);

@@ -375,6 +375,16 @@ describe("ChatMarkdown workspace file opens", () => {
     await screen.rerender(
       <ChatMarkdown
         cwd="/school/physics"
+        fileLinkBaseDir="/school/physics"
+        text="[Notes](physics/notes/a.md) and [Other](/elsewhere/b.md:9)"
+        threadRef={threadRef}
+      />,
+    );
+    await act(async () => container.querySelector("a")!.click());
+    expect(openFile).toHaveBeenLastCalledWith(threadRef, "notes/a.md", undefined);
+    await screen.rerender(
+      <ChatMarkdown
+        cwd="/school/physics"
         fileLinkBaseDir="/school/old"
         text="[Notes](physics/notes/a.md) and [Other](/elsewhere/b.md:9)"
         threadRef={threadRef}
@@ -424,7 +434,7 @@ describe("ChatMarkdown workspace file opens", () => {
       .toHaveTextContent(
         "The file could not be accessed or read. It may be missing or inaccessible.Attempted path/school/old/physics/notes/a.md",
       );
-    expect([openFile, workspaceSearch].map((spy) => spy.mock.calls.length)).toEqual([2, 1]);
+    expect([openFile, workspaceSearch].map((spy) => spy.mock.calls.length)).toEqual([3, 2]);
   });
 });
 

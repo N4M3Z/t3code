@@ -512,22 +512,18 @@ export function useComposerSend(input: ComposerSendInput) {
           sendCtx.threadContexts.length === 0 &&
           sendCtx.environmentContexts.length === 0,
       });
+      const notify = (toast: Parameters<typeof stackedThreadToast>[0]) =>
+        toastManager.add(stackedThreadToast(toast));
       const refuse = (description: string) =>
-        toastManager.add(
-          stackedThreadToast({ type: "warning", title: "Thread not moved", description }),
-        );
+        notify({ type: "warning", title: "Thread not moved", description });
       if (blockReason !== null) {
         refuse(blockReason);
         return;
       }
       if (folderMove.command === "cd" && folderMove.path === null) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "info",
-            title: `Working in ${activeThread.worktreePath ?? activeProject?.workspaceRoot ?? "an unknown folder"}`,
-            description: "Usage: /cd <path>",
-          }),
-        );
+        const folder =
+          activeThread.worktreePath ?? activeProject?.workspaceRoot ?? "an unknown folder";
+        notify({ type: "info", title: `Working in ${folder}`, description: "Usage: /cd <path>" });
         return;
       }
       if (folderMove.command === "no" && folderMove.argument !== "") {
@@ -544,23 +540,16 @@ export function useComposerSend(input: ComposerSendInput) {
           const result = await moveThread({ environmentId, input: request });
           if (result._tag === "Success") return result.value;
           const error = squashAtomCommandFailure(result);
-          return {
-            _tag: "refused",
-            reason: error instanceof Error ? error.message : "Could not move the thread.",
-          };
+          const reason = error instanceof Error ? error.message : "Could not move the thread.";
+          return { _tag: "refused", reason };
         },
         async (question) => (await requestConfirmDialog(threadMoveQuestionText(question))) ?? false,
       )
         .then((outcome) => {
           if (outcome === null) return;
-          if (outcome._tag === "refused") {
-            refuse(outcome.reason);
-            return;
-          }
+          if (outcome._tag === "refused") return refuse(outcome.reason);
           if (outcome.members.length === 0) {
-            toastManager.add(
-              stackedThreadToast({ type: "info", title: `Already in ${outcome.folder}.` }),
-            );
+            notify({ type: "info", title: `Already in ${outcome.folder}.` });
           }
           if (
             currentRouteThreadKeyRef.current === routeThreadKey &&

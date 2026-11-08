@@ -87,10 +87,10 @@ import {
   resolveTimelineMinimapHitStripWidth,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
-  deriveRunFolderByRunId,
-  receiptFolderByEntryId,
+  receiptFoldersSignature,
   runFoldersSignature,
   timelineRowFolder,
+  timelineRowFolders,
   type MessagesTimelineRow,
   type TimelineLatestRun,
 } from "./MessagesTimeline.logic";
@@ -1241,8 +1241,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
       return next;
     });
   });
-  const runFolderByRunId = deriveRunFolderByRunId(`${runFoldersSignature(runsProp, runFolders)}`);
-  const receiptFolders = receiptFolderByEntryId(timelineEntries);
+  const folders = timelineRowFolders(
+    `${runFoldersSignature(runsProp, runFolders)}`,
+    `${receiptFoldersSignature(timelineEntries)}`,
+  );
   const renderItem = ({ item }: { item: MessagesTimelineRow }) => (
     <TimelineRowCtx value={sharedState}>
       <div
@@ -1257,7 +1259,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
           data-timeline-root="true"
         >
           <AudioPreviewUnmountContext value={onAudioUnmount}>
-            <TimelineRowFolderCtx value={timelineRowFolder(item, runFolderByRunId, receiptFolders)}>
+            <TimelineRowFolderCtx value={timelineRowFolder(item, folders)}>
               <TimelineRowContent row={item} />
             </TimelineRowFolderCtx>
           </AudioPreviewUnmountContext>
@@ -1265,13 +1267,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       </div>
     </TimelineRowCtx>
   );
-  const listExtraData = {
-    identity: listIdentityKey,
-    rowCount: rows.length,
-    sharedState,
-    runFolderByRunId,
-    receiptFolders,
-  };
+  const listExtraData = { identity: listIdentityKey, rowCount: rows.length, sharedState, folders };
   const timelineListFooter = (
     <TimelineListFooter
       composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}

@@ -165,10 +165,7 @@ export function mergeOlderHistoryIntoProjection(
     return projection;
   return {
     ...projection,
-    runFolders:
-      runFolders.length === 0
-        ? projection.runFolders
-        : [...(projection.runFolders ?? []), ...runFolders],
+    ...(runFolders.length > 0 && { runFolders: [...(projection.runFolders ?? []), ...runFolders] }),
     turnItems: [...turnItemById.values()],
     visibleTurnItems: renumberVisible(visible),
   };

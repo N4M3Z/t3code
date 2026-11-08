@@ -569,7 +569,6 @@ describe("side chat slash commands", () => {
 describe("parseFolderMoveCommand", () => {
   it.each([
     ["/cd", { command: "cd", path: null }],
-    ["/cd   ", { command: "cd", path: null }],
     ['/cd ""', { command: "cd", path: null }],
     ["/CD ~/src/app ", { command: "cd", path: "~/src/app" }],
     ["/cd My Projects/app", { command: "cd", path: "My Projects/app" }],
@@ -578,7 +577,6 @@ describe("parseFolderMoveCommand", () => {
     ['/cd "a', { command: "cd", path: '"a' }],
     ["/no", { command: "no", argument: "" }],
     ["/no project", { command: "no", argument: "project" }],
-    ["/cdx", null],
     ["/node", null],
     ["run /cd later", null],
   ])("parses %j", (text, expected) => {

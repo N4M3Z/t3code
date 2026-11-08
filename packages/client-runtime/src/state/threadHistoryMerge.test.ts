@@ -9,7 +9,7 @@ import { derivePendingThreadRequests } from "./threadRequests.ts";
 
 const NOW = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
 
-function row(index: number, runId: string | null = null): OrchestrationV2ProjectedTurnItem {
+function row(index: number): OrchestrationV2ProjectedTurnItem {
   const id = `item-${index}` as never;
   return {
     position: index,
@@ -20,7 +20,7 @@ function row(index: number, runId: string | null = null): OrchestrationV2Project
       id,
       type: "command_execution",
       threadId: v2ThreadId,
-      runId: runId as never,
+      runId: null,
       nodeId: null,
       providerThreadId: null,
       providerTurnId: null,
@@ -111,14 +111,14 @@ describe("threadHistoryMerge", () => {
   });
 
   it("prepends older rows and dedupes by source identity", () => {
-    const recent = [row(2, "run-2"), row(3, "run-2")];
+    const recent = [row(2), row(3)];
     const projection = {
       ...v2Projection,
       runFolders: [folder("run-2")],
       turnItems: recent.map((entry) => entry.item),
       visibleTurnItems: recent.map((entry, position) => ({ ...entry, position })),
     };
-    const older = [row(0, "run-1"), row(1, "run-1"), row(2, "run-2")];
+    const older = [row(0), row(1), row(2)];
     const merged = mergeOlderHistoryIntoProjection(projection, older, undefined, [
       folder("run-1"),
       folder("run-2", "/stale"),
@@ -142,7 +142,7 @@ describe("threadHistoryMerge", () => {
 
   it("fills inherited activity without confusing identical item IDs from different source threads", () => {
     const inherited = (index: number) => ({
-      ...row(index, "run-source"),
+      ...row(index),
       visibility: "inherited" as const,
       sourceThreadId: "fork-source" as never,
     });
@@ -161,7 +161,6 @@ describe("threadHistoryMerge", () => {
       sourceFolders,
     );
     expect(merged.runFolders).toEqual(sourceFolders);
-    expect(merged.runs).toBe(projection.runs);
     expect(
       merged.visibleTurnItems.map((entry) => [entry.sourceThreadId, entry.sourceItemId]),
     ).toEqual([

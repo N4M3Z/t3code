@@ -2683,60 +2683,50 @@ export function runFoldersSignature(
 ): string {
   return JSON.stringify(
     [...runFolders, ...runs].flatMap(({ id, cwd, repositoryRoot }) =>
-      cwd === undefined ? [] : [{ id, cwd, repositoryRoot }],
+      cwd === undefined ? [] : [[id, { cwd, repositoryRoot }]],
     ),
   );
 }
 
-export function deriveRunFolderByRunId(signature: string): ReadonlyMap<RunId, TimelineRunFolder> {
-  return new Map(
-    (JSON.parse(signature) as Array<TimelineRunFolder & { id: RunId }>).map(({ id, ...folder }) => [
-      id,
-      folder,
-    ]),
-  );
-}
-
-export function receiptFolderByEntryId(
-  entries: ReadonlyArray<TimelineEntry>,
-): ReadonlyMap<string, TimelineRunFolder> {
-  const byEntryId = new Map<string, TimelineRunFolder>();
+/** Entries stream in after the last receipt, so the string holds still while a reply streams. */
+export function receiptFoldersSignature(entries: ReadonlyArray<TimelineEntry>): string {
+  const covered: Array<[string, TimelineRunFolder]> = [];
   let folder: TimelineRunFolder | undefined;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
-    if (folder !== undefined) byEntryId.set(entry.id, folder);
+    if (folder !== undefined) covered.push([entry.id, folder]);
     const item = entry.kind === "work" ? entry.entry.structuredPayload : undefined;
     if (item?.type === "system_notice" && item.previousFolder !== undefined) {
       folder = { cwd: item.previousFolder };
     }
   }
-  return byEntryId;
+  return JSON.stringify(covered);
+}
+
+export function timelineRowFolders(runsSignature: string, receiptsSignature: string) {
+  return {
+    byRunId: new Map(JSON.parse(runsSignature) as Array<[RunId, TimelineRunFolder]>),
+    byEntryId: new Map(JSON.parse(receiptsSignature) as Array<[string, TimelineRunFolder]>),
+  };
 }
 
 export function timelineRowFolder(
   row: MessagesTimelineRow,
-  runFolderByRunId: ReadonlyMap<RunId, TimelineRunFolder>,
-  receiptFolderByEntryId: ReadonlyMap<string, TimelineRunFolder>,
+  folders: ReturnType<typeof timelineRowFolders>,
 ): TimelineRunFolder | undefined {
-  const runId =
+  const [runId, entryId] =
     row.kind === "message"
-      ? row.message.runId
+      ? [row.message.runId, row.id]
       : row.kind === "proposed-plan"
-        ? row.proposedPlan.runId
+        ? [row.proposedPlan.runId, row.id]
         : row.kind === "work"
-          ? row.groupedEntries[0]?.runId
+          ? [row.groupedEntries[0]?.runId, row.groupedEntries[0]?.id]
           : row.kind === "work-live"
-            ? row.entry.runId
-            : null;
-  const entryId =
-    row.kind === "work"
-      ? row.groupedEntries[0]?.id
-      : row.kind === "work-live"
-        ? row.entry.id
-        : row.id;
+            ? [row.entry.runId, row.entry.id]
+            : [null, row.id];
   return (
-    (runId == null ? undefined : runFolderByRunId.get(runId)) ??
-    (entryId === undefined ? undefined : receiptFolderByEntryId.get(entryId))
+    (runId == null ? undefined : folders.byRunId.get(runId)) ??
+    (entryId === undefined ? undefined : folders.byEntryId.get(entryId))
   );
 }
 

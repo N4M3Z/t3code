@@ -347,8 +347,7 @@ export function parseFolderMoveCommand(text: string): FolderMoveCommand | null {
   if (!match) return null;
   const argument = match[2]?.trim() ?? "";
   if (match[1]?.toLowerCase() === "no") return { command: "no", argument };
-  const path = /^(["'])([\s\S]*)\1$/.exec(argument)?.[2] ?? argument;
-  return { command: "cd", path: path || null };
+  return { command: "cd", path: (/^(["'])([\s\S]*)\1$/.exec(argument)?.[2] ?? argument) || null };
 }
 
 /**

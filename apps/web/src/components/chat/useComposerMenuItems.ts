@@ -321,8 +321,7 @@ export function useComposerMenuItems({
           skill.description ??
           (skill.scope ? `${skill.scope} skill` : ""),
       }));
-      // T3's `/clear` and `/cd` replace the provider's; its `/clear` would clear a session T3
-      // still treats as live, and its `cd` never runs because T3 intercepts `/cd` first.
+      // T3 handles `/clear` and `/cd`; the provider's would clear a live session or never run.
       const visibleProviderSlashCommandItems = providerSlashCommandItems.filter(
         (item) =>
           (item.command.name !== "compact" || compactSlashCommandAvailable) &&

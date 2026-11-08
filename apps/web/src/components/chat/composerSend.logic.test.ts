@@ -170,39 +170,26 @@ const moved = {
 } as const satisfies ThreadMoveResult;
 
 describe("runThreadMove", () => {
-  it("asks each question once and repeats with every flag collected so far", async () => {
+  it("asks each question once, repeats with every flag so far, and stops at a decline", async () => {
     const calls: ThreadMoveInput[] = [];
     const answers: ReadonlyArray<ThreadMoveResult> = [needsProject, confirm, moved];
-    const outcome = await runThreadMove(
-      request,
-      async (input) => {
-        calls.push(input);
-        return answers[calls.length - 1]!;
-      },
-      async () => true,
-    );
-    expect(outcome).toBe(moved);
+    const move = async (input: ThreadMoveInput) => {
+      calls.push(input);
+      return answers[calls.length - 1]!;
+    };
+    expect(await runThreadMove(request, move, async () => true)).toBe(moved);
     expect(calls).toEqual([
       request,
       { ...request, addProject: true },
       { ...request, addProject: true, confirm: true },
     ]);
-  });
 
-  it("stops at a declined question and returns a refusal without asking", async () => {
-    const calls: ThreadMoveInput[] = [];
+    calls.length = 0;
     const asked: string[] = [];
-    const declined = await runThreadMove(
-      request,
-      async (input) => {
-        calls.push(input);
-        return calls.length === 1 ? needsProject : confirm;
-      },
-      async (question) => {
-        asked.push(question._tag);
-        return question._tag === "needs-project";
-      },
-    );
+    const declined = await runThreadMove(request, move, async (question) => {
+      asked.push(question._tag);
+      return question._tag === "needs-project";
+    });
     expect(declined).toBeNull();
     expect(asked).toEqual(["needs-project", "confirm"]);
     expect(calls).toHaveLength(2);
@@ -220,16 +207,13 @@ describe("runThreadMove", () => {
 });
 
 describe("threadMoveQuestionText", () => {
-  it("says when the new project nests in another", () => {
+  it("names the nesting, the folder left, the destination, the way back, and the threads", () => {
     expect(
       threadMoveQuestionText({
         ...needsProject,
         nestedIn: { projectId: ProjectId.make("p"), title: "App" },
       }),
     ).toBe("Create a project nested in App for /repo/app and move this thread there?");
-  });
-
-  it("names the folder left, the destination, the way back, and the threads staying", () => {
     expect(
       threadMoveQuestionText({
         ...confirm,

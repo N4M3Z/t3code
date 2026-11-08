@@ -545,7 +545,6 @@ export function UserMessageContextReferenceChip(props: {
 function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentContext }) {
   const renderedAppearance = useRenderedAppearance();
   const ctx = use(TimelineRowCtx);
-  const rowFolder = use(TimelineRowFolderCtx)?.cwd;
   const fenceLanguage = comment.fenceLanguage ?? "diff";
   const renderablePatch = getRenderablePatch(
     buildReviewCommentRenderablePatch(comment),
@@ -567,7 +566,7 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
           <ChatMarkdown
             text={comment.text}
             cwd={ctx.markdownCwd}
-            fileLinkBaseDir={rowFolder}
+            fileLinkBaseDir={use(TimelineRowFolderCtx)?.cwd}
             threadRef={ctx.threadRef ?? undefined}
             skills={ctx.skills}
             parseRawHtml={false}

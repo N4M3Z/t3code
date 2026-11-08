@@ -31,7 +31,6 @@ import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts"
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const rowFolder = use(TimelineRowFolderCtx)?.cwd;
   // The timeline holds a streaming message's row while only its text grows.
   const liveText = useAssistantMessageText(
     row.message.streaming ? ctx.threadRef : null,
@@ -55,7 +54,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             <ChatMarkdown
               text={messageText}
               cwd={ctx.markdownCwd}
-              fileLinkBaseDir={rowFolder}
+              fileLinkBaseDir={use(TimelineRowFolderCtx)?.cwd}
               threadRef={ctx.threadRef ?? undefined}
               isStreaming={Boolean(row.message.streaming)}
               lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}

@@ -3682,8 +3682,7 @@ export default function ChatView(props: ChatViewProps) {
                                 sideChatAvailable={sideChat.available}
                                 sideChatDisabledReason={sideChatDisabledReason}
                                 folderMoveAvailable={
-                                  serverConfig?.environment.capabilities.threadWorkingFolderMove ===
-                                  true
+                                  serverConfig?.environment.capabilities.threadWorkingFolderMove
                                 }
                                 onFreshSession={
                                   freshSessionCommandAvailable ? armFreshSessionStable : undefined

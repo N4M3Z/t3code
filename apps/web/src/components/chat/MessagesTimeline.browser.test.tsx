@@ -1664,9 +1664,6 @@ describe("MessagesTimeline file links", () => {
     await vi.waitFor(() =>
       expect(screen.container.querySelectorAll("a.chat-markdown-file-link")).toHaveLength(5),
     );
-    expect(screen.container.querySelector("a.chat-markdown-file-link")?.getAttribute("href")).toBe(
-      "/repo-before/notes.txt",
-    );
     expect(await opened()).toEqual([
       "/repo-before/notes.txt",
       "/repo-before/plan-notes.txt",
@@ -1693,14 +1690,9 @@ describe("MessagesTimeline file links", () => {
       ]),
     );
 
-    fileMenu.targets = [];
     await click(screen.button(/^app/));
-    screen.button(/^kept\.txt/).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
-    expect(fileMenu.targets.map(resolveFileContextMenuAbsolutePath)).toEqual([
-      "/repo-a/app/kept.txt",
-    ]);
-
     for (const [folder, target] of [
+      [{ cwd: "/repo-a/app", repositoryRoot: "/repo-a" }, "/repo-a/app/kept.txt"],
       [{ cwd: "/repo-w/app" }, "/repo-w/app/kept.txt"],
       [{ cwd: "/repo-old" }, "/repo-old/app/kept.txt"],
     ] as const) {

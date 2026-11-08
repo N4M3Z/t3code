@@ -389,7 +389,7 @@ export interface ChatComposerProps {
   onUsageLimitsCommand?: (() => void) | undefined;
   sideChatAvailable?: boolean;
   sideChatDisabledReason?: string | null;
-  folderMoveAvailable?: boolean;
+  folderMoveAvailable?: boolean | undefined;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   onFreshSession?: (() => void) | undefined;
   environmentUnavailable: {
@@ -1952,12 +1952,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         return;
       }
-      if (
-        item.command === "side" ||
-        item.command === "btw" ||
-        item.command === "cd" ||
-        item.command === "no"
-      ) {
+      if (["side", "btw", "cd", "no"].includes(item.command)) {
         if (item.command !== "cd" && item.command !== "no" && props.sideChatDisabledReason) return;
         const applied = applyPromptReplacement(
           trigger.rangeStart,

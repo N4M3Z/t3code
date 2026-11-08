@@ -1186,7 +1186,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   markdownCwd: string | undefined;
 }) {
   const ctx = use(TimelineRowCtx);
-  const rowFolder = use(TimelineRowFolderCtx)?.cwd;
   if (props.text.length === 0) {
     return null;
   }
@@ -1194,7 +1193,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     <ChatMarkdown
       text={props.text}
       cwd={props.markdownCwd}
-      fileLinkBaseDir={rowFolder}
+      fileLinkBaseDir={use(TimelineRowFolderCtx)?.cwd}
       threadRef={ctx.threadRef ?? undefined}
       skills={props.skills}
       className="text-foreground"

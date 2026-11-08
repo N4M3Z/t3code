@@ -307,7 +307,8 @@ export const layer: Layer.Layer<
       }
       for (const [cwd, stale] of Map.groupBy(staleCheckpoints, runCwd)) {
         if (!(yield* fileSystem.exists(cwd))) continue;
-        yield* checkpoints.deleteStaleRefs({ scope: { ...scope, cwd }, checkpoints: stale });
+        const drop = checkpoints.deleteStaleRefs({ scope: { ...scope, cwd }, checkpoints: stale });
+        yield* cwd === scope.cwd ? drop : drop.pipe(Effect.ignore({ log: true }));
       }
 
       // Lock against full-row thread writes that could restore the old native session after rollback.

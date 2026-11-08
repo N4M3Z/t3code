@@ -576,14 +576,17 @@ const seedRollbackHistory = Effect.gen(function* () {
               restored.push(checkpoint.id);
             }),
           deleteStaleRefs: ({ scope, checkpoints }) =>
-            Effect.sync(() => {
-              for (const checkpoint of checkpoints) {
-                assert.equal(
-                  scope.cwd,
-                  checkpoint.id === checkpointId(6) ? movedCwd : process.cwd(),
-                );
+            Effect.gen(function* () {
+              const checkpointIds = checkpoints.map((checkpoint) => checkpoint.id);
+              if (scope.cwd === movedCwd) {
+                return yield* new CheckpointService.CheckpointDeleteStaleRefsError({
+                  scopeId: scope.id,
+                  checkpointIds,
+                  cause: "not a repository",
+                });
               }
-              deletedRefs.push(...checkpoints.map((checkpoint) => checkpoint.id));
+              assert.equal(scope.cwd, process.cwd());
+              deletedRefs.push(...checkpointIds);
             }),
         }),
         Layer.mock(EventSink.EventSinkV2)({
@@ -673,7 +676,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
 
         assert.deepEqual(history.rollbackCounts, [4]);
         assert.deepEqual(history.restored, [checkpointId(2)]);
-        assert.sameMembers(history.deletedRefs, [3, 5, 6].map(checkpointId));
+        assert.sameMembers(history.deletedRefs, [3, 5].map(checkpointId));
         const runs = yield* sql<{ ordinal: number; status: string }>`
           SELECT ordinal, status FROM orchestration_v2_projection_runs
           WHERE thread_id = ${threadId} ORDER BY ordinal`;
@@ -717,7 +720,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
           yield* history.rollback(0);
 
           assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
-          assert.sameMembers(history.deletedRefs, [1, 2, 3, 5, 6].map(history.checkpointId));
+          assert.sameMembers(history.deletedRefs, [1, 2, 3, 5].map(history.checkpointId));
           assert.sameMembers(
             history.committed
               .filter((event) => event.type === "run.updated")

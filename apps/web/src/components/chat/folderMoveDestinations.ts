@@ -222,6 +222,32 @@ export function folderMoveFolderRows(input: {
 }
 
 /**
+ * What the pane says when the typed text matches nothing, or null. A path counts only its
+ * matching folders: the parent row is always there and is not a match.
+ */
+export function folderMoveNoMatchText(input: {
+  readonly query: string;
+  readonly platform: string;
+  /** The folder the server resolved the typed directory to, or null before it answers. */
+  readonly directoryFullPath: string | null;
+  readonly entries: ReadonlyArray<FilesystemBrowseEntry>;
+  readonly rowCount: number;
+}): string | null {
+  const typed = folderMoveQueryPath(input.query);
+  const browse = getFilesystemBrowsePath(typed, input.platform);
+  if (browse.isBrowsing) {
+    return input.directoryFullPath !== null &&
+      browse.filterQuery !== "" &&
+      input.entries.length === 0
+      ? `No folder named "${browse.filterQuery}" in ${input.directoryFullPath}.`
+      : null;
+  }
+  return typed !== "" && input.rowCount === 0
+    ? `No project matches "${typed}". Type a path to move to a folder.`
+    : null;
+}
+
+/**
  * The query Tab completes to: the highlighted row's folder, or what the typed name has in
  * common with the folders it matches. Null leaves the text as it is.
  */

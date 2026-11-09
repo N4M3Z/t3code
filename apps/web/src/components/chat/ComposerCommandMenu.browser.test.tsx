@@ -57,6 +57,27 @@ it("shows the /cd pane with its folder, group labels, and a badge on a project r
   expect(onSelect).toHaveBeenCalledWith(items[2]);
 });
 
+it("shows a message below the parent row when a typed folder name matches nothing", async () => {
+  const footer = 'No folder named "zzz" in /repos.';
+  await using screen = await render(
+    <ComposerCommandMenu
+      listId="destinations"
+      items={[row("parent", "..", { icon: "parent" })]}
+      resolvedTheme="dark"
+      isLoading={false}
+      triggerKind="folder"
+      footer={footer}
+      activeItemId={null}
+      onHighlightedItemChange={() => {}}
+      onSelect={() => {}}
+    />,
+    // router: false because the menu reads no route.
+    { router: false },
+  );
+  await expect.element(screen.getByRole("option", { name: /\.\./ })).toBeVisible();
+  await expect.element(screen.getByText(footer)).toBeVisible();
+});
+
 it("says that folders are loading while the /cd pane has no rows yet", async () => {
   await using screen = await render(
     <ComposerCommandMenu

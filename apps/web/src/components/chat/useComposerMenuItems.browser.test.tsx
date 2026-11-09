@@ -71,6 +71,18 @@ it.each([
   expect(emptyState.current).toBe(text ?? reason);
 });
 
+it("the /cd pane says when a typed name matches no project", async () => {
+  const shown: RefObject<ComposerCommandItem[] | null> = { current: null };
+  const emptyState: RefObject<string | null> = { current: null };
+  await using _screen = await render(
+    <AppAtomRegistryProvider>
+      <SlashMenu folderMoveAvailable folderQuery="harn" items={shown} emptyState={emptyState} />
+    </AppAtomRegistryProvider>,
+  );
+  expect(shown.current).toEqual([]);
+  expect(emptyState.current).toBe('No project matches "harn". Type a path to move to a folder.');
+});
+
 it.each([
   [false, ["/model", "/review"]],
   [true, ["/model", "/cd", "/no", "/review"]],

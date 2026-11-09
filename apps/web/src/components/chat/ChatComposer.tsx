@@ -1168,6 +1168,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     items: composerMenuItems,
     isLoading: isComposerMenuLoading,
     emptyState: composerMenuEmptyState,
+    footer: composerMenuFooter,
     folderBrowse,
   } = useComposerMenuItems({
     composerTrigger,
@@ -3543,7 +3544,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           ? "Loading folders..."
                           : "Searching workspace files..."
                     : composerMenuEmptyState
-                  : ""}
+                  : composerSuggestionsVisible
+                    ? (composerMenuFooter ?? "")
+                    : ""}
               </div>
               {composerSuggestionsVisible && (
                 <ComposerCommandMenuLayer anchor={composerMenuAnchor}>
@@ -3559,6 +3562,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         ? `Working in ${gitCwd}`
                         : undefined
                     }
+                    footer={composerMenuFooter ?? undefined}
                     activeItemId={activeComposerMenuItem?.id ?? null}
                     onHighlightedItemChange={onComposerMenuItemHighlightedStable}
                     onSelect={onSelectComposerItemStable}

@@ -3,6 +3,7 @@ import { expect, it } from "vite-plus/test";
 import {
   folderMoveFolderRows,
   folderMoveHighlightsFirstRow,
+  folderMoveNoMatchText,
   folderMoveProjectRows,
   folderMoveQueryPath,
   folderMoveTabCompletion,
@@ -137,6 +138,37 @@ it("offers the browsed folder, its parent, project roots first, then folders", (
     entries: [],
   });
   expect(atRoot[0]).toMatchObject({ label: "beta", isProject: true, action: { kind: "move" } });
+});
+
+it("says when a typed path or project name matches nothing", () => {
+  const noMatch = (query: string, shown: typeof entries, rowCount: number) =>
+    folderMoveNoMatchText({
+      query,
+      platform: "MacIntel",
+      directoryFullPath: "/repos",
+      entries: shown,
+      rowCount,
+    });
+  // The parent row is still listed, and it does not count as a match.
+  expect(noMatch("~/repos/zzz", [], 1)).toBe('No folder named "zzz" in /repos.');
+  expect(noMatch("~/repos/d", entries, 3)).toBeNull();
+  // A folder with no subfolder is not a failed match.
+  expect(noMatch("~/repos/", [], 2)).toBeNull();
+  expect(noMatch("harn", [], 0)).toBe(
+    'No project matches "harn". Type a path to move to a folder.',
+  );
+  expect(noMatch("no", [], 1)).toBeNull();
+  expect(noMatch("", [], 0)).toBeNull();
+  // Nothing is said before the server answers.
+  expect(
+    folderMoveNoMatchText({
+      query: "~/repos/zzz",
+      platform: "MacIntel",
+      directoryFullPath: null,
+      entries: [],
+      rowCount: 0,
+    }),
+  ).toBeNull();
 });
 
 it("completes Tab to the highlighted folder or to the common prefix", () => {

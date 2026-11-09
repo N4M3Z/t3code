@@ -107,6 +107,8 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   emptyStateText?: string;
   /** A line above the rows, such as the folder a thread works in. */
   header?: string | undefined;
+  /** A line below the rows, such as why a typed name matches none of them. */
+  footer?: string | undefined;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
   onSelect: (item: ComposerCommandItem) => void;
@@ -197,6 +199,9 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
             </p>
           </div>
         )}
+        {props.footer && props.items.length > 0 ? (
+          <p className="break-all px-5 pt-1 pb-4 text-secondary-label text-xs">{props.footer}</p>
+        ) : null}
       </ComposerBanner.Surface>
     </Command>
   );

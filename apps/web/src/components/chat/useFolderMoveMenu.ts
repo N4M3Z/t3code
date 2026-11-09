@@ -13,6 +13,7 @@ import { getEnvironmentBrowsePlatform } from "../CommandPalette.logic";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
 import {
   folderMoveFolderRows,
+  folderMoveNoMatchText,
   folderMoveProjectRows,
   folderMoveQueryPath,
 } from "./folderMoveDestinations";
@@ -81,6 +82,15 @@ export function useFolderMoveMenu(input: {
           query: input.query ?? "",
         });
   const cannotRead = browse.isBrowsing && (listing.error !== null || access.error !== null);
+  const noMatch = active
+    ? folderMoveNoMatchText({
+        query: input.query ?? "",
+        platform,
+        directoryFullPath: listing.data?.parentPath ?? null,
+        entries,
+        rowCount: rows.length,
+      })
+    : null;
   return {
     items: rows.map((row): ComposerCommandItem => ({
       ...row,
@@ -91,9 +101,12 @@ export function useFolderMoveMenu(input: {
       input.disabledReason ??
       (cannotRead
         ? `Cannot read ${browse.directoryPath}.`
-        : browse.isBrowsing
-          ? "No matching folders."
-          : "No other project. Type a path to move to a folder."),
+        : (noMatch ??
+          (browse.isBrowsing
+            ? "No matching folders."
+            : "No other project. Type a path to move to a folder."))),
+    /** A message below the rows. The menu shows `emptyState` instead when it has no row. */
+    footer: rows.length > 0 ? noMatch : null,
     /** The folders the typed name matches, for Tab completion. */
     entries,
     platform,

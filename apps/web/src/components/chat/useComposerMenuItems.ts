@@ -462,6 +462,8 @@ export function useComposerMenuItems({
     items,
     isLoading,
     emptyState,
+    /** A message below the rows of the `/cd` pane, or null. */
+    footer: composerTriggerKind === "folder" ? folderMove.footer : null,
     folderBrowse: {
       entries: folderMove.entries,
       platform: folderMove.platform,

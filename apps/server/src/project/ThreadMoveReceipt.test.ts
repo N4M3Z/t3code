@@ -17,9 +17,8 @@ it("writes the receipt for a move out of a project root, a worktree or a scratch
   const full = threadMoveReceiptMessage(move).split("\n");
   assert.deepStrictEqual(full, [
     "Moved to B.",
-    'The thread came from project "A".',
+    'It came from project "A", where it worked in `/repos/a`.',
     "The next turn runs in `/repos/b`.",
-    "The thread worked in `/repos/a`.",
     'Moved with it: "Side chat", "Subagent".',
     'Cleared the branch "feat/login". Its pull request #12 (https://github.com/o/r/pull/12) stays linked.',
     "Open terminals keep their folder.",
@@ -29,8 +28,7 @@ it("writes the receipt for a move out of a project root, a worktree or a scratch
     full[0],
     full[1],
     full[2],
-    full[3],
-    full[6],
+    full[5],
   ]);
   assert.include(
     threadMoveReceiptMessage({ ...move, folder: "/repos/b`c" }),
@@ -47,7 +45,8 @@ it("writes the receipt for a move out of a project root, a worktree or a scratch
       leftFolder: { exists: true, project: "P", otherThreads: ["Fork", "Archived"] },
     }),
     [
-      "The thread worked in `/worktrees/w`.",
+      'It came from project "A", where it worked in `/worktrees/w`.',
+      "The next turn runs in `/repos/b`.",
       "The folder `/worktrees/w` stays on disk with all its files until you remove it.",
       'Still working in it: project "P", "Fork", "Archived".',
       'Moved with it: "Side chat", "Subagent".',

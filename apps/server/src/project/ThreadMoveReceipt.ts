@@ -37,9 +37,8 @@ export function threadMoveReceiptMessage(input: ThreadMoveReceiptInput): string 
   const previousFolder = receiptPath(input.previousFolder);
   return [
     `Moved to ${input.project}.`,
-    `The thread came from project ${quote(input.previousProject)}.`,
+    `It came from project ${quote(input.previousProject)}, where it worked in ${previousFolder}.`,
     `The next turn runs in ${receiptPath(input.folder)}.`,
-    `The thread worked in ${previousFolder}.`,
     left !== null &&
       (left.exists
         ? `The folder ${previousFolder} stays on disk with all its files until you remove it.`

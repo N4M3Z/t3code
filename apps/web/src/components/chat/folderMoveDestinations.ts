@@ -42,6 +42,17 @@ export function folderMoveQueryPath(query: string): string {
   return quoted ? (quoted[2] ?? "") : trimmed;
 }
 
+/**
+ * A typed name picks the first matching project, so that row is active and Enter moves there.
+ * An empty query and a path have no active row: Enter runs the typed destination as it stands.
+ */
+export function folderMoveHighlightsFirstRow(input: {
+  readonly query: string;
+  readonly isBrowsing: boolean;
+}): boolean {
+  return !input.isBrowsing && folderMoveQueryPath(input.query) !== "";
+}
+
 const samePath = (left: string, right: string) =>
   normalizeProjectPathForComparison(left) === normalizeProjectPathForComparison(right);
 

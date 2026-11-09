@@ -462,6 +462,10 @@ export function useComposerMenuItems({
     items,
     isLoading,
     emptyState,
-    folderBrowse: { entries: folderMove.entries, platform: folderMove.platform },
+    folderBrowse: {
+      entries: folderMove.entries,
+      platform: folderMove.platform,
+      isBrowsing: folderMove.isBrowsing,
+    },
   };
 }

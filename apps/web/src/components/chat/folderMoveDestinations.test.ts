@@ -2,6 +2,7 @@ import { expect, it } from "vite-plus/test";
 
 import {
   folderMoveFolderRows,
+  folderMoveHighlightsFirstRow,
   folderMoveProjectRows,
   folderMoveQueryPath,
   folderMoveTabCompletion,
@@ -81,6 +82,13 @@ it("filters projects by title and root, with the exact title first", () => {
       }),
     ),
   ).toEqual(["beta"]);
+});
+
+it("makes the first row active for a typed project name only", () => {
+  expect(folderMoveHighlightsFirstRow({ query: "harn", isBrowsing: false })).toBe(true);
+  expect(folderMoveHighlightsFirstRow({ query: "", isBrowsing: false })).toBe(false);
+  expect(folderMoveHighlightsFirstRow({ query: ' "', isBrowsing: false })).toBe(false);
+  expect(folderMoveHighlightsFirstRow({ query: "./harn", isBrowsing: true })).toBe(false);
 });
 
 const entries = [

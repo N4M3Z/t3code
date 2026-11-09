@@ -97,5 +97,7 @@ export function useFolderMoveMenu(input: {
     /** The folders the typed name matches, for Tab completion. */
     entries,
     platform,
+    /** True for a path query, which lists folders. False for a project-name query. */
+    isBrowsing: browse.isBrowsing,
   };
 }

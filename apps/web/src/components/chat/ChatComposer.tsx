@@ -214,7 +214,7 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { folderMoveMenuBlockReason } from "./composerSend.logic";
-import { folderMoveTabCompletion } from "./folderMoveDestinations";
+import { folderMoveHighlightsFirstRow, folderMoveTabCompletion } from "./folderMoveDestinations";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
 import { getComposerPromptInjectionState, getComposerReasoningStep } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
@@ -1204,8 +1204,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     highlightedItemId: composerHighlightedItemId,
     currentSearchKey: composerMenuSearchKey,
     highlightedSearchKey: composerHighlightedSearchKey,
-    // Enter on a typed destination moves there, so no row is chosen until the user picks one.
-    highlightFirst: composerTrigger?.kind !== "folder",
+    // Enter on a typed path moves there, so no row is chosen until the user picks one. A typed
+    // project name has no folder to move to, so its first match is chosen.
+    highlightFirst:
+      composerTrigger?.kind !== "folder" ||
+      folderMoveHighlightsFirstRow({
+        query: composerTrigger.query,
+        isBrowsing: folderBrowse.isBrowsing,
+      }),
   });
   const activeComposerMenuItem =
     composerMenuItems.find((item) => item.id === activeComposerMenuItemId) ?? null;

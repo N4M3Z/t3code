@@ -144,7 +144,17 @@ it("folderMoveBlockReason refuses locally in a local draft and with context", ()
     requestPending: false,
     textOnly: true,
   };
-  expect(folderMoveBlockReason({ ...ready, isLocalDraftThread: true })).toMatch(/project picker/);
+  // The toast and the slash menu row give a draft the same sentence. Only the toast ends it.
+  const draftReason = "Choose the project in this draft's picker before the first message";
+  expect(folderMoveBlockReason({ ...ready, isLocalDraftThread: true })).toBe(`${draftReason}.`);
+  expect(
+    folderMoveMenuBlockReason({
+      isLocalDraftThread: true,
+      editingQueuedMessage: false,
+      requestPending: false,
+      running: false,
+    }),
+  ).toBe(draftReason);
   expect(folderMoveBlockReason({ ...ready, textOnly: false })).toMatch(/attachments/);
 });
 
@@ -163,7 +173,7 @@ it("folderMoveMenuBlockReason names the first thing that blocks a move", () => {
     /pending question/,
   );
   expect(folderMoveMenuBlockReason({ ...free, running: true, isLocalDraftThread: true })).toBe(
-    "Choose the project before the first message.",
+    "Choose the project in this draft's picker before the first message",
   );
 });
 
@@ -231,7 +241,7 @@ it("threadMoveDialogCopy names nesting, both folders once, the way back and thre
     to: null,
     lines: [
       "The folder stays on disk with all its files until you remove it.",
-      "You cannot return here with /cd. To keep a way back, cancel and use Turn into project first.",
+      'No command brings the thread back here. To keep a way back, cancel and choose "Turn into project" first.',
       "Still working there: Fork.",
     ],
     confirmLabel: "Move thread",

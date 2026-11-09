@@ -295,7 +295,7 @@ export function useComposerMenuItems({
                     ? "Move this thread to another folder"
                     : alreadyThere
                       ? "This thread is already in No project"
-                      : "Move to No project in a new scratch folder."),
+                      : "Move to No project in a new scratch folder"),
                 disabled: folderMoveDisabledReason !== null || alreadyThere,
               };
             })

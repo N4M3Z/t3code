@@ -95,6 +95,10 @@ it.each([
     </AppAtomRegistryProvider>,
   );
   expect(shown.current?.map((item) => item.label)).toEqual(labels);
+  // A row description has no period, like the rows around it.
+  expect(shown.current?.find((item) => item.label === "/no")?.description).toBe(
+    folderMoveAvailable ? "Move to No project in a new scratch folder" : undefined,
+  );
 });
 
 it("in a No project thread, /no says the thread is already there and /cd stays usable", async () => {
@@ -113,7 +117,7 @@ it("in a No project thread, /no says the thread is already there and /cd stays u
 
 it("shows why a move is blocked on /cd and /no, and disables both", async () => {
   const shown: RefObject<ComposerCommandItem[] | null> = { current: null };
-  const reason = "Choose the project before the first message.";
+  const reason = "Choose the project in this draft's picker before the first message";
   await using _screen = await render(
     <AppAtomRegistryProvider>
       <SlashMenu folderMoveAvailable folderMoveDisabledReason={reason} items={shown} />

@@ -85,6 +85,12 @@ export function approvalRedirectNotice(input: {
   return null;
 }
 
+/**
+ * Why a draft cannot move, the same in the refusal toast and on the slash menu row. The toast
+ * adds the period that its other sentences end with. A menu row has none.
+ */
+const DRAFT_CHOOSES_PROJECT = "Choose the project in this draft's picker before the first message";
+
 export function folderMoveBlockReason(input: {
   readonly supported: boolean;
   readonly isLocalDraftThread: boolean;
@@ -93,7 +99,7 @@ export function folderMoveBlockReason(input: {
   readonly textOnly: boolean;
 }): string | null {
   if (!input.supported) return "Update this environment's T3 Code server to move threads.";
-  if (input.isLocalDraftThread) return "Pick the folder in this draft's project picker instead.";
+  if (input.isLocalDraftThread) return `${DRAFT_CHOOSES_PROJECT}.`;
   if (input.editingQueuedMessage) return "Save or cancel the queued message edit first.";
   if (input.requestPending) return "Answer the pending question or approval first.";
   if (!input.textOnly) return "Remove the attachments and context, then send it again.";
@@ -123,7 +129,7 @@ export function folderMoveMenuBlockReason(input: {
   readonly requestPending: boolean;
   readonly running: boolean;
 }): string | null {
-  if (input.isLocalDraftThread) return "Choose the project before the first message.";
+  if (input.isLocalDraftThread) return DRAFT_CHOOSES_PROJECT;
   if (input.editingQueuedMessage) return "Save or cancel the queued message edit first.";
   if (input.requestPending) return "Answer the pending question or approval first.";
   if (input.running) return THREAD_STILL_WORKING;
@@ -176,7 +182,7 @@ export function threadMoveDialogCopy(
   const wayBack = {
     cd: "/cd to the From folder brings the thread back as a root thread.",
     "add-project": "Add the From folder as a project first, and /cd to it brings the thread back.",
-    none: "You cannot return here with /cd. To keep a way back, cancel and use Turn into project first.",
+    none: 'No command brings the thread back here. To keep a way back, cancel and choose "Turn into project" first.',
   }[question.wayBack];
   return {
     title: question.wayBack === "none" ? "Leave this scratch folder?" : "Leave this worktree?",

@@ -10,6 +10,7 @@ import { useComposerMenuItems } from "./useComposerMenuItems";
 function SlashMenu(props: {
   folderMoveAvailable: boolean;
   folderMoveDisabledReason?: string;
+  folderMoveInNoProject?: boolean;
   items: RefObject<ComposerCommandItem[] | null>;
   folderQuery?: string;
   emptyState?: RefObject<string | null>;
@@ -32,7 +33,7 @@ function SlashMenu(props: {
     folderMoveAvailable: props.folderMoveAvailable,
     folderMoveDisabledReason: props.folderMoveDisabledReason ?? null,
     folderMoveCurrentFolder: null,
-    folderMoveInNoProject: false,
+    folderMoveInNoProject: props.folderMoveInNoProject === true,
     freshSessionAvailable: false,
     compactSlashCommandAvailable: false,
     selectedProvider: ProviderDriverKind.make("claudeAgent"),
@@ -94,6 +95,20 @@ it.each([
     </AppAtomRegistryProvider>,
   );
   expect(shown.current?.map((item) => item.label)).toEqual(labels);
+});
+
+it("in a No project thread, /no says the thread is already there and /cd stays usable", async () => {
+  const shown: RefObject<ComposerCommandItem[] | null> = { current: null };
+  await using _screen = await render(
+    <AppAtomRegistryProvider>
+      <SlashMenu folderMoveAvailable folderMoveInNoProject items={shown} />
+    </AppAtomRegistryProvider>,
+  );
+  const moves = shown.current?.filter((item) => item.label === "/cd" || item.label === "/no");
+  expect(moves).toMatchObject([
+    { description: "Move this thread to another folder", disabled: false },
+    { description: "This thread is already in No project", disabled: true },
+  ]);
 });
 
 it("shows why a move is blocked on /cd and /no, and disables both", async () => {

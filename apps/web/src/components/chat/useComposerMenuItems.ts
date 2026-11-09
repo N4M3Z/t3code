@@ -281,18 +281,24 @@ export function useComposerMenuItems({
             ] as const)
           : []),
         ...(folderMoveAvailable
-          ? (["cd", "no"] as const).map((command) => ({
-              id: `slash:${command}`,
-              type: "slash-command" as const,
-              command,
-              label: `/${command}`,
-              description:
-                folderMoveDisabledReason ??
-                (command === "cd"
-                  ? "Move this thread to another folder"
-                  : "Move to No project in a new scratch folder."),
-              disabled: folderMoveDisabledReason !== null,
-            }))
+          ? (["cd", "no"] as const).map((command) => {
+              // `/no` has nowhere to go from No project, so the row says so before it runs.
+              const alreadyThere = command === "no" && folderMoveInNoProject;
+              return {
+                id: `slash:${command}`,
+                type: "slash-command" as const,
+                command,
+                label: `/${command}`,
+                description:
+                  folderMoveDisabledReason ??
+                  (command === "cd"
+                    ? "Move this thread to another folder"
+                    : alreadyThere
+                      ? "This thread is already in No project"
+                      : "Move to No project in a new scratch folder."),
+                disabled: folderMoveDisabledReason !== null || alreadyThere,
+              };
+            })
           : []),
         ...(freshSessionAvailable
           ? ([

@@ -140,6 +140,19 @@ it("offers the browsed folder, its parent, project roots first, then folders", (
   expect(atRoot[0]).toMatchObject({ label: "beta", isProject: true, action: { kind: "move" } });
 });
 
+it("does not offer to use a folder the server may not read, and keeps the parent row", () => {
+  const rows = folderMoveFolderRows({
+    projects,
+    currentFolder: null,
+    query: "/repos/locked/",
+    platform: "MacIntel",
+    directoryFullPath: "/repos/locked",
+    entries: [],
+    unreadable: true,
+  });
+  expect(labels(rows)).toEqual([".."]);
+});
+
 it("says when a typed path or project name matches nothing", () => {
   const noMatch = (query: string, shown: typeof entries, rowCount: number) =>
     folderMoveNoMatchText({

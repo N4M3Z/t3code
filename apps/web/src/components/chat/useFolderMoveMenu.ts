@@ -56,6 +56,8 @@ export function useFolderMoveMenu(input: {
   const entries = listing.data
     ? filterFilesystemBrowseEntries(listing.data.entries, browse.filterQuery).visibleEntries
     : NO_ENTRIES;
+  // An older server omits the flag and lists a folder it may not read as an empty one.
+  const unreadable = listing.data?.unreadable === true;
   const scratchRoot = presentation?.serverConfig?.scratchWorkspaceRoot ?? null;
   const environmentProjects = projects.filter(
     (project) =>
@@ -72,6 +74,7 @@ export function useFolderMoveMenu(input: {
             platform,
             directoryFullPath: listing.data.parentPath,
             entries,
+            unreadable,
           })
         : []
       : folderMoveProjectRows({
@@ -81,7 +84,9 @@ export function useFolderMoveMenu(input: {
           inNoProject: input.inNoProject,
           query: input.query ?? "",
         });
-  const cannotRead = browse.isBrowsing && (listing.error !== null || access.error !== null);
+  const cannotRead =
+    browse.isBrowsing && (unreadable || listing.error !== null || access.error !== null);
+  const cannotReadText = `Cannot read ${listing.data?.parentPath ?? browse.directoryPath}.`;
   const noMatch = active
     ? folderMoveNoMatchText({
         query: input.query ?? "",
@@ -100,13 +105,13 @@ export function useFolderMoveMenu(input: {
     emptyState:
       input.disabledReason ??
       (cannotRead
-        ? `Cannot read ${browse.directoryPath}.`
+        ? cannotReadText
         : (noMatch ??
           (browse.isBrowsing
             ? "No matching folders."
             : "No other project. Type a path to move to a folder."))),
     /** A message below the rows. The menu shows `emptyState` instead when it has no row. */
-    footer: rows.length > 0 ? noMatch : null,
+    footer: rows.length === 0 ? null : cannotRead ? cannotReadText : noMatch,
     /** The folders the typed name matches, for Tab completion. */
     entries,
     platform,

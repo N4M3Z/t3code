@@ -161,6 +161,8 @@ export function folderMoveFolderRows(input: {
   /** The folder the server resolved the typed directory to. */
   readonly directoryFullPath: string;
   readonly entries: ReadonlyArray<FilesystemBrowseEntry>;
+  /** The server may not read the folder, so the pane does not offer to move into it. */
+  readonly unreadable?: boolean | undefined;
 }): ReadonlyArray<FolderMoveRow> {
   const typed = folderMoveQueryPath(input.query);
   const browse = getFilesystemBrowsePath(typed, input.platform);
@@ -174,7 +176,7 @@ export function folderMoveFolderRows(input: {
       input.currentFolder !== null && samePath(input.directoryFullPath, input.currentFolder);
     if (project !== undefined) {
       rows.push({ ...projectRow(project), id: "folder-move:here", group: "Folders" });
-    } else if (!isCurrent) {
+    } else if (!isCurrent && input.unreadable !== true) {
       rows.push({
         id: "folder-move:here",
         group: "Folders",

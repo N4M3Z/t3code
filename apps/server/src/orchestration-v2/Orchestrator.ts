@@ -106,7 +106,7 @@ import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
-import { CheckpointServiceV2 } from "./CheckpointService.ts";
+import { CheckpointServiceV2, latestRootScope } from "./CheckpointService.ts";
 import {
   CommandPolicyV2,
   followUpOwnerRun,
@@ -1489,7 +1489,7 @@ const nativeSubagentRef = (subagent: OrchestrationV2Subagent): DyingNativeSubage
 });
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
-  const checkpointService = yield* CheckpointServiceV2;
+  const checkpoints = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
   const eventSink = yield* EventSinkV2;
@@ -1497,6 +1497,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
+  // A run's root scope depends on the folders the thread already has scopes in.
+  const checkpointService = {
+    prepareRootRunScope: (
+      input: Omit<Parameters<typeof checkpoints.prepareRootRunScope>[0], "threadScopes">,
+    ) =>
+      projectionStore.getThreadRecords(input.threadId, ["checkpointScopes"]).pipe(
+        // A command can create a thread and its first run together.
+        Effect.catchTags({
+          ProjectionStoreThreadNotFoundError: () => Effect.succeed({ checkpointScopes: [] }),
+        }),
+        Effect.flatMap(({ checkpointScopes }) =>
+          checkpoints.prepareRootRunScope({ ...input, threadScopes: checkpointScopes }),
+        ),
+      ),
+  };
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
@@ -2789,8 +2804,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               )
           : null;
       const activeHandoff = handoff ?? legacyImportRecoveryHandoff;
+      // A thread on main has one scope, which the last dispatch rewrote. Here that is the scope
+      // written last, so a run queued before the thread changed folder starts in it.
       const checkpointScope =
-        storedCheckpointScope ??
+        (storedCheckpointScope === undefined
+          ? undefined
+          : (latestRootScope(projection) ?? storedCheckpointScope)) ??
         (yield* runtimePolicy
           .resolve({ thread: projection.thread, modelSelection: queuedRun.modelSelection })
           .pipe(
@@ -2969,7 +2988,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               summary: activeHandoff.summaryText,
             };
       const executionIdentityEvents: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> =
-        storedCheckpointScope === undefined ||
+        storedCheckpointScope !== checkpointScope ||
         storedProviderThread.id !== queuedProviderThread.id ||
         attempt.providerInstanceId !== queuedRun.providerInstanceId
           ? [
@@ -13627,7 +13646,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       if (command.restoreFiles !== false) {
-        const isolated = yield* isCheckpointRestoreIsolated(projection.thread, targetScope, {
+        // Files restore into the folder the thread ran in last, also for a turn from another one.
+        const restoreScope = { cwd: (latestRootScope(projection) ?? targetScope).cwd };
+        const isolated = yield* isCheckpointRestoreIsolated(projection.thread, restoreScope, {
           projects,
           path,
           fileSystem,

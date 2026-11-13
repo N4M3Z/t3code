@@ -238,11 +238,13 @@ const ProjectionCheckpointContext = Schema.Struct({
     OrchestrationV2RunJsonSchema.mapFields(({ id, ordinal, status }) => ({ id, ordinal, status })),
   ),
   checkpointScopes: Schema.Array(
-    OrchestrationV2CheckpointScopeJsonSchema.mapFields(({ id, runId, kind, cwd }) => ({
+    OrchestrationV2CheckpointScopeJsonSchema.mapFields(({ id, runId, kind, cwd, createdAt }) => ({
       id,
       runId,
       kind,
       cwd,
+      // When the scope was last written. Every dispatch writes the scope it prepares.
+      createdAt: Schema.optional(createdAt),
     })),
   ),
   checkpoints: Schema.Array(
@@ -5844,7 +5846,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             `,
               sql`
               SELECT scope_id AS id, run_id AS "runId", kind,
-                json_extract(payload_json, '$.cwd') AS cwd
+                json_extract(payload_json, '$.cwd') AS cwd,
+                json_extract(payload_json, '$.createdAt') AS "createdAt"
               FROM orchestration_v2_projection_checkpoint_scopes
               WHERE thread_id = ${threadId}
               ORDER BY ordinal_within_parent ASC, scope_id ASC
@@ -6006,10 +6009,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             JOIN orchestration_v2_projection_runs AS run ON run.run_id = attempt.run_id
             WHERE run.thread_id = ${threadId} AND run.status = 'rolled_back'
               AND attempt.thread_id = ${threadId}`,
+                // A thread whose folder changed has a root scope for each folder.
                 sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_checkpoints
-            WHERE thread_id = ${threadId} AND scope_id = ${scope.id} AND status = 'ready'
+            WHERE thread_id = ${threadId} AND status = 'ready'
               AND app_run_ordinal > ${targetOrdinal}
-            ORDER BY ordinal_within_scope ASC`,
+              AND scope_id IN (SELECT scope_id FROM orchestration_v2_projection_checkpoint_scopes
+                WHERE thread_id = ${threadId} AND kind = ${scope.kind})
+            ORDER BY app_run_ordinal ASC`,
               ]);
             const targetAttempt = (yield* decodeRollbackTargetAttempts(attemptRows))[0];
             const runsToRollback = yield* decodeRows(decodeRunPayload, threadId)(runRows);

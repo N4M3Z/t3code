@@ -190,6 +190,74 @@ it.effect.each([false, true])(
   },
 );
 
+it.effect("starts a diff at the folder's own snapshots after the thread's folder changes", () => {
+  // Run 1 ran in the project root. The thread then moved, and runs 2 and 3 ran in a worktree.
+  const thirdRunId = RunId.make("run:checkpoint-diff-v2:3");
+  const checkpoint = (
+    scopeId: CheckpointScopeId,
+    ordinalWithinScope: number,
+    runId: RunId | null,
+  ): ProjectionCheckpointContext["checkpoints"][number] => ({
+    scopeId,
+    runId,
+    ordinalWithinScope,
+    appRunOrdinal: runId === null ? null : ordinalWithinScope,
+    status: "ready",
+    ref: CheckpointRef.make(`refs/t3/test/${scopeId}/${ordinalWithinScope}`),
+  });
+  const worktreeBaseline = checkpoint(secondScopeId, 1, null);
+  const secondRun = checkpoint(secondScopeId, 2, secondRunId);
+  const diffCheckpoints = vi.fn((_input: CheckpointStore.DiffCheckpointsInput) =>
+    Effect.succeed("diff"),
+  );
+  const layer = layerFor({
+    projection: Effect.succeed({
+      runs: [
+        { id: firstRunId, ordinal: 1, status: "completed" },
+        { id: secondRunId, ordinal: 2, status: "completed" },
+        { id: thirdRunId, ordinal: 3, status: "completed" },
+      ],
+      checkpointScopes: [
+        { id: firstScopeId, runId: firstRunId, kind: "root_run", cwd: "/repo" },
+        { id: secondScopeId, runId: thirdRunId, kind: "root_run", cwd: "/repo/worktree" },
+      ],
+      checkpoints: [
+        checkpoint(firstScopeId, 0, null),
+        checkpoint(firstScopeId, 1, firstRunId),
+        worktreeBaseline,
+        secondRun,
+        checkpoint(secondScopeId, 3, thirdRunId),
+      ],
+    }),
+    diffCheckpoints,
+  });
+
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+    const start = (scopeId: CheckpointScopeId) =>
+      checkpointRefForScopeOrdinal({ scopeId, ordinalWithinScope: 0 });
+    yield* query.getFullThreadDiff({ threadId, toTurnCount: 3 });
+    yield* query.getTurnDiff({ threadId, fromTurnCount: 1, toTurnCount: 3 });
+    yield* query.getTurnDiff({ threadId, fromTurnCount: 1, toTurnCount: 2 });
+    yield* query.getTurnDiff({ threadId, fromTurnCount: 2, toTurnCount: 3 });
+    yield* query.getFullThreadDiff({ threadId, toTurnCount: 1 });
+    assert.deepEqual(
+      diffCheckpoints.mock.calls.map(([input]) => [input.cwd, input.fromCheckpointRef]),
+      [
+        // The root's snapshots are another checkout: start where the thread entered the worktree.
+        ["/repo/worktree", yield* start(secondScopeId)],
+        ["/repo/worktree", yield* start(secondScopeId)],
+        // The first turn in the worktree has its own baseline there.
+        ["/repo/worktree", worktreeBaseline.ref],
+        ["/repo/worktree", secondRun.ref],
+        // A turn from the project root keeps its own refs. Git runs where the thread ran last,
+        // because the root may be gone and linked worktrees share the refs.
+        ["/repo/worktree", yield* start(firstScopeId)],
+      ],
+    );
+  }).pipe(Effect.provide(layer));
+});
+
 const layerVcsProcess = VcsProcess.layer.pipe(Layer.provide(NodeServices.layer));
 const layerStore = CheckpointStore.layer.pipe(
   Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(layerVcsProcess))),

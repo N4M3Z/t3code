@@ -47,6 +47,7 @@ import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import { latestRootScope } from "./CheckpointService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import {
   buildBoundedThreadProjection,
@@ -402,6 +403,138 @@ it.effect("routes full projection reads to readers and retains uncommitted write
       }),
     );
   }).pipe(Effect.provide(ProjectionStore.layer.pipe(Layer.provideMerge(layerReaderDatabase)))),
+);
+
+it.effect("a rollback discards later checkpoints in every root scope of the thread", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:rollback-scopes");
+    const nodeId = NodeId.make("node:rollback-scopes");
+    const providerThreadId = ProviderThreadId.make("provider-thread:rollback-scopes");
+    yield* store.apply({
+      id: EventId.make("event:rollback-scopes:thread"),
+      type: "thread.created",
+      threadId,
+      occurredAt: now,
+      payload: {
+        createdBy: "user",
+        creationSource: "web",
+        id: threadId,
+        projectId: ProjectId.make("project:rollback-scopes"),
+        title: "Handed off to a worktree",
+        providerInstanceId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/repo/worktree",
+        activeProviderThreadId: providerThreadId,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      },
+    });
+    yield* store.apply({
+      id: EventId.make("event:rollback-scopes:provider-thread"),
+      type: "provider-thread.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: providerThreadId,
+        appThreadId: threadId,
+        driver,
+        providerInstanceId,
+        providerSessionId: ProviderSessionId.make("session:rollback-scopes"),
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        lastRunOrdinal: 3,
+        handoffIds: [],
+        forkedFrom: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    // Runs 1 and 2 ran in the project root. Run 3 ran in the worktree after the thread moved.
+    const scopeIds = {
+      // The worktree's scope id sorts first, and it was written last.
+      "/repo/worktree": CheckpointScopeId.make("scope:rollback-scopes:a-worktree"),
+      "/repo": CheckpointScopeId.make("scope:rollback-scopes:root"),
+    };
+    for (const [cwd, id] of Object.entries(scopeIds)) {
+      yield* store.apply({
+        id: EventId.make(`event:rollback-scopes:scope:${id}`),
+        type: "checkpoint-scope.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id,
+          threadId,
+          runId: null,
+          nodeId,
+          parentScopeId: null,
+          providerThreadId,
+          kind: "root_run",
+          ordinalWithinParent: 0,
+          advancesAppRunCount: true,
+          cwd,
+          createdAt: cwd === "/repo" ? now : DateTime.add(now, { seconds: 1 }),
+        },
+      });
+    }
+    const checkpointId = (ordinal: number) =>
+      CheckpointId.make(`checkpoint:rollback-scopes:${ordinal}`);
+    for (const [ordinal, scopeId] of [
+      [1, scopeIds["/repo"]],
+      [2, scopeIds["/repo"]],
+      [3, scopeIds["/repo/worktree"]],
+    ] as const) {
+      yield* store.apply({
+        id: EventId.make(`event:rollback-scopes:checkpoint:${ordinal}`),
+        type: "checkpoint.captured",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: checkpointId(ordinal),
+          threadId,
+          scopeId,
+          runId: RunId.make(`run:rollback-scopes:${ordinal}`),
+          nodeId,
+          parentCheckpointId: null,
+          ordinalWithinScope: ordinal,
+          appRunOrdinal: ordinal,
+          ref: CheckpointRef.make(`refs/t3/rollback-scopes/${ordinal}`),
+          status: "ready",
+          files: [],
+          capturedAt: now,
+        },
+      });
+    }
+
+    const context = yield* store.getCheckpointRollbackContext(threadId, {
+      providerThreadId,
+      checkpointId: checkpointId(1),
+      scopeId: scopeIds["/repo"],
+    });
+    assert.deepEqual(
+      context.staleCheckpoints.map((checkpoint) => checkpoint.id),
+      [checkpointId(2), checkpointId(3)],
+    );
+    // The checkpoint context carries when each scope was written, which names the thread's folder.
+    assert.strictEqual(
+      latestRootScope(yield* store.getCheckpointContext(threadId))?.cwd,
+      "/repo/worktree",
+    );
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("record reads restrict provider histories to delivery identities", () =>

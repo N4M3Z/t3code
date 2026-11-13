@@ -24,7 +24,7 @@ import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 
 const CHECKPOINT_REFS_PREFIX = "refs/t3/orchestration-v2/checkpoints";
-const ROOT_CHECKPOINT_SCOPE_NAME = "root";
+export const ROOT_CHECKPOINT_SCOPE_NAME = "root";
 // The provider turn waits on the baseline, so a workspace too slow for this starts without one.
 // It bounds only the snapshot: waiting on the lock lets an in-flight capture finish the same ref.
 const BASELINE_CAPTURE_BUDGET = "5 seconds";
@@ -113,6 +113,10 @@ export interface CheckpointServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly cwd: string;
     readonly createdAt: DateTime.Utc;
+    /** The scopes the thread already has; they tell whether its folder changed. */
+    readonly threadScopes: ReadonlyArray<
+      Pick<OrchestrationV2CheckpointScope, "id" | "cwd" | "createdAt">
+    >;
   }) => Effect.Effect<OrchestrationV2CheckpointScope, CheckpointServiceV2Error>;
   readonly captureBaseline: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
@@ -151,6 +155,30 @@ export class CheckpointServiceV2 extends Context.Service<
   CheckpointServiceV2Shape
 >()("t3/orchestration-v2/CheckpointService/CheckpointServiceV2") {}
 
+/**
+ * The root scope a thread ran in last. A thread that changed folder keeps a scope for each folder,
+ * and only this one names a folder the thread still uses. Every dispatch writes the scope it
+ * prepares, so it is the scope written last. Preparing a scope keeps the write times in order.
+ */
+export const latestRootScope = <
+  Scope extends {
+    readonly kind: OrchestrationV2CheckpointScope["kind"];
+    readonly createdAt?: DateTime.Utc | undefined;
+  },
+>(context: {
+  readonly checkpointScopes: ReadonlyArray<Scope>;
+}): Scope | undefined => {
+  const written = (scope: Scope) =>
+    scope.createdAt === undefined ? 0 : DateTime.toEpochMillis(scope.createdAt);
+  return context.checkpointScopes
+    .filter((scope) => scope.kind === "root_run")
+    .reduce<Scope | undefined>(
+      (latest, scope) =>
+        latest === undefined || written(scope) >= written(latest) ? scope : latest,
+      undefined,
+    );
+};
+
 export const checkpointRefForScopeOrdinal = Effect.fn("checkpointRefForScopeOrdinal")(
   function* (input: { readonly scopeId: CheckpointScopeId; readonly ordinalWithinScope: number }) {
     const crypto = yield* Digest.Digest;
@@ -185,11 +213,24 @@ const makeRootRunScope = Effect.fn("CheckpointService.makeRootRunScope")(functio
   readonly providerThreadId: ProviderThreadId;
   readonly cwd: string;
   readonly createdAt: DateTime.Utc;
+  readonly threadScopes: ReadonlyArray<
+    Pick<OrchestrationV2CheckpointScope, "id" | "cwd" | "createdAt">
+  >;
 }) {
-  const scopeId = yield* input.idAllocator.allocate.checkpointScope({
+  const firstScopeId = yield* input.idAllocator.allocate.checkpointScope({
     threadId: input.threadId,
     name: ROOT_CHECKPOINT_SCOPE_NAME,
   });
+  const firstScope = input.threadScopes.find((scope) => scope.id === firstScopeId);
+  // Linked worktrees share checkpoint refs, so a folder the thread enters later gets its own scope
+  // and baseline. A thread that stays in one folder keeps its scope and its checkpoint ids.
+  const isFirstScope = firstScope === undefined || firstScope.cwd === input.cwd;
+  const scopeId = isFirstScope
+    ? firstScopeId
+    : yield* input.idAllocator.allocate.checkpointScope({
+        threadId: input.threadId,
+        name: `${ROOT_CHECKPOINT_SCOPE_NAME}:${input.cwd}`,
+      });
   return {
     id: scopeId,
     threadId: input.threadId,
@@ -198,10 +239,20 @@ const makeRootRunScope = Effect.fn("CheckpointService.makeRootRunScope")(functio
     parentScopeId: null,
     providerThreadId: input.providerThreadId,
     kind: "root_run",
-    ordinalWithinParent: 0,
+    // 0 is the thread's first root scope.
+    ordinalWithinParent: isFirstScope ? 0 : 1,
     advancesAppRunCount: true,
     cwd: input.cwd,
-    createdAt: input.createdAt,
+    // Later than the thread's other scopes, also when the clock stepped back: `latestRootScope`
+    // reads the scope written last as the folder the thread ran in last.
+    createdAt: DateTime.makeUnsafe(
+      Math.max(
+        DateTime.toEpochMillis(input.createdAt),
+        ...input.threadScopes
+          .filter((scope) => scope.id !== scopeId)
+          .map((scope) => DateTime.toEpochMillis(scope.createdAt) + 1),
+      ),
+    ),
   } satisfies OrchestrationV2CheckpointScope;
 });
 
@@ -272,29 +323,37 @@ export const layer: Layer.Layer<
             return;
           }
 
-          const checkpointRef = yield* checkpointRefFor({
-            scopeId: input.scope.id,
-            ordinalWithinScope: input.ordinalWithinScope,
-          });
-          const exists = yield* checkpointStore.hasCheckpointRef({
-            cwd: input.scope.cwd,
-            checkpointRef,
-          });
-          if (exists) {
-            return;
-          }
-
-          yield* checkpointStore
-            .captureCheckpoint({
+          // Ordinal 0 of a scope is its folder when the thread first ran there: the thread start
+          // for the first scope, and the state at entry for a folder the thread moved into.
+          const ordinals =
+            input.scope.ordinalWithinParent === 0 || input.ordinalWithinScope === 0
+              ? [input.ordinalWithinScope]
+              : [0, input.ordinalWithinScope];
+          for (const ordinalWithinScope of ordinals) {
+            const checkpointRef = yield* checkpointRefFor({
+              scopeId: input.scope.id,
+              ordinalWithinScope,
+            });
+            const exists = yield* checkpointStore.hasCheckpointRef({
               cwd: input.scope.cwd,
               checkpointRef,
-            })
-            .pipe(
-              Effect.timeout(BASELINE_CAPTURE_BUDGET),
-              Effect.catchTags({
-                VcsUnsupportedOperationError: () => Effect.void,
-              }),
-            );
+            });
+            if (exists) {
+              continue;
+            }
+
+            yield* checkpointStore
+              .captureCheckpoint({
+                cwd: input.scope.cwd,
+                checkpointRef,
+              })
+              .pipe(
+                Effect.timeout(BASELINE_CAPTURE_BUDGET),
+                Effect.catchTags({
+                  VcsUnsupportedOperationError: () => Effect.void,
+                }),
+              );
+          }
         }),
       ).pipe(
         Effect.mapError(

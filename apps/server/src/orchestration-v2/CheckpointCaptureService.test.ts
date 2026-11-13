@@ -377,6 +377,213 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
       }),
   );
 
+  it.effect.each([true, false])(
+    "keeps the thread start in the thread's first scope after a move, start recorded=%s",
+    (startRecorded) =>
+      Effect.gen(function* () {
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const name = `checkpoint-capture-moved-${startRecorded}`;
+        const movedThreadId = ThreadId.make(`thread:${name}`);
+        const movedRunId = RunId.make(`run:${name}`);
+        const movedNodeId = NodeId.make(`node:${name}`);
+        const movedProviderThreadId = ProviderThreadId.make(`provider-thread:${name}`);
+        const movedScopeId = CheckpointScopeId.make(`scope:${name}:worktree`);
+        const firstScopeId = yield* IdAllocator.IdAllocatorV2.pipe(
+          Effect.flatMap((ids) =>
+            ids.allocate.checkpointScope({
+              threadId: movedThreadId,
+              name: CheckpointService.ROOT_CHECKPOINT_SCOPE_NAME,
+            }),
+          ),
+          Effect.provide(IdAllocator.layer),
+        );
+        const scope = (id: CheckpointScopeId, cwd: string, ordinalWithinParent: number) => ({
+          id,
+          threadId: movedThreadId,
+          runId: movedRunId,
+          nodeId: movedNodeId,
+          parentScopeId: null,
+          providerThreadId: movedProviderThreadId,
+          kind: "root_run" as const,
+          ordinalWithinParent,
+          advancesAppRunCount: true,
+          cwd,
+          createdAt: now,
+        });
+        const checkpoint = (scopeId: CheckpointScopeId, ordinal: number, runId: RunId | null) => ({
+          id: CheckpointId.make(`checkpoint:${scopeId}:${ordinal}`),
+          threadId: movedThreadId,
+          scopeId,
+          runId,
+          nodeId: movedNodeId,
+          parentCheckpointId: null,
+          ordinalWithinScope: ordinal,
+          appRunOrdinal: runId === null ? null : ordinal,
+          ref: CheckpointRef.make(`checkpoint-ref:${scopeId}:${ordinal}`),
+          status: "ready" as const,
+          files: [],
+          capturedAt: now,
+        });
+        // Run 1 ran in the project root. The thread then moved, and run 2 waits in the worktree.
+        const events: ReadonlyArray<
+          Omit<OrchestrationV2DomainEvent, "id" | "threadId" | "occurredAt">
+        > = [
+          {
+            type: "thread.created",
+            payload: {
+              createdBy: "user",
+              creationSource: "web",
+              id: movedThreadId,
+              projectId,
+              title: "Moved to a worktree",
+              providerInstanceId,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: "/repo/worktree",
+              activeProviderThreadId: null,
+              lineage: {
+                parentThreadId: null,
+                relationshipToParent: null,
+                rootThreadId: movedThreadId,
+              },
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+          },
+          {
+            type: "run.updated",
+            runId: movedRunId,
+            nodeId: movedNodeId,
+            providerInstanceId,
+            payload: {
+              id: movedRunId,
+              threadId: movedThreadId,
+              ordinal: 2,
+              providerInstanceId,
+              modelSelection,
+              providerThreadId: movedProviderThreadId,
+              userMessageId: MessageId.make(`message:${name}`),
+              rootNodeId: movedNodeId,
+              activeAttemptId: null,
+              status: "waiting",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: null,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          },
+          {
+            type: "node.updated",
+            runId: movedRunId,
+            nodeId: movedNodeId,
+            providerInstanceId,
+            payload: {
+              id: movedNodeId,
+              threadId: movedThreadId,
+              runId: movedRunId,
+              parentNodeId: null,
+              rootNodeId: movedNodeId,
+              kind: "root_turn",
+              status: "waiting",
+              countsForRun: true,
+              providerThreadId: movedProviderThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              runtimeRequestId: null,
+              checkpointScopeId: movedScopeId,
+              startedAt: now,
+              completedAt: null,
+            },
+          },
+          {
+            type: "provider-thread.updated",
+            nodeId: movedNodeId,
+            driver,
+            providerInstanceId,
+            payload: {
+              id: movedProviderThreadId,
+              driver,
+              providerInstanceId,
+              providerSessionId: null,
+              appThreadId: movedThreadId,
+              ownerNodeId: movedNodeId,
+              nativeThreadRef: null,
+              nativeConversationHeadRef: null,
+              status: "idle",
+              firstRunOrdinal: 1,
+              lastRunOrdinal: 2,
+              handoffIds: [],
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          { type: "checkpoint-scope.created", payload: scope(firstScopeId, "/repo", 0) },
+          { type: "checkpoint-scope.created", payload: scope(movedScopeId, "/repo/worktree", 1) },
+          ...(startRecorded
+            ? [{ type: "checkpoint.captured" as const, payload: checkpoint(firstScopeId, 0, null) }]
+            : []),
+        ];
+        for (const [index, event] of events.entries()) {
+          yield* projectionStore.apply({
+            ...event,
+            id: EventId.make(`event:${name}:${index}`),
+            threadId: movedThreadId,
+            occurredAt: now,
+          } as OrchestrationV2DomainEvent);
+        }
+
+        const materialized: Array<readonly [CheckpointScopeId, string, number]> = [];
+        const layerCapture = CheckpointCaptureService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              Layer.mock(CheckpointService.CheckpointServiceV2)({
+                materializeBaselineCheckpoint: (input) =>
+                  Effect.sync(() => {
+                    materialized.push([input.scope.id, input.scope.cwd, input.ordinalWithinScope]);
+                    return checkpoint(input.scope.id, input.ordinalWithinScope, null);
+                  }),
+                capture: () => Effect.succeed(checkpoint(movedScopeId, 2, movedRunId)),
+              }),
+              Layer.mock(EventSink.EventSinkV2)({
+                commitCommand: (input) =>
+                  Effect.succeed({
+                    commandId: input.commandId,
+                    committed: true,
+                    sequence: 1,
+                    events: input.events,
+                    effects: [],
+                  } as never),
+              }),
+            ),
+          ),
+        );
+        yield* CheckpointCaptureService.CheckpointCaptureServiceV2.pipe(
+          Effect.flatMap((service) =>
+            service.execute({ threadId: movedThreadId, runId: movedRunId, scopeId: movedScopeId }),
+          ),
+          Effect.provide(layerCapture),
+        );
+        // The worktree's scope never gets an ordinal-zero checkpoint, which clients read as the
+        // thread start. The first scope's is filled in from here when it is missing.
+        assert.deepEqual(materialized, [
+          ...(startRecorded ? [] : [[firstScopeId, "/repo/worktree", 0] as const]),
+          [movedScopeId, "/repo/worktree", 1],
+        ]);
+      }),
+  );
+
   it.effect("does not capture a stopped run that a rollback already discarded", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;

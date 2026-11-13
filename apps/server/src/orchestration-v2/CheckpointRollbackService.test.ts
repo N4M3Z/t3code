@@ -463,6 +463,7 @@ it.effect.each([{ restoreFiles: true }, { restoreFiles: false }])(
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThread: () => Effect.succeed(projection.thread),
               getCheckpointRollbackContext: () => Effect.succeed(projection),
+              getCheckpointContext: () => Effect.succeed({ checkpointScopes: [] } as never),
               getShellSnapshot: () =>
                 Effect.succeed({
                   schemaVersion: 1,

@@ -34,6 +34,12 @@ it.effect.each([
   "sibling",
   "shared-provider",
   "conversation",
+  // The checkpoint's turn ran in the project root before the thread moved to its worktree.
+  "moved",
+  // The thread selected its worktree but has not run there since its turn in the project root.
+  "selected",
+  // Another thread ran in this worktree once and has since moved to a sibling.
+  "moved-away",
 ] as const)("preserves overlapping workspace files, owner=%s", (owner) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -86,9 +92,9 @@ it.effect.each([
       rootNodes: [],
       targetAttempt: undefined,
       rolledBackAttemptIds: [],
-      staleCheckpoints: [],
+      staleCheckpoints: owner === "moved" ? [{ id: "later-checkpoint", runId: null }] : [],
       checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: null },
-      scope: { id: scopeId, cwd },
+      scope: { id: scopeId, cwd: owner === "moved" || owner === "selected" ? parent : cwd },
       runsToRollback: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as ProjectionCheckpointRollbackContext;
     const layerTest = CheckpointRollbackService.layer.pipe(
@@ -113,12 +119,44 @@ it.effect.each([
                 threads: [otherThread] as never,
                 archivedThreads: [],
               }),
-            getCheckpointContext: () =>
-              Effect.succeed({
-                runs: [],
-                checkpoints: [],
-                checkpointScopes: [],
-              }),
+            getCheckpointContext: (id) =>
+              Effect.succeed(
+                id === threadId
+                  ? ({
+                      runs: [
+                        { id: "root-run", ordinal: 1, status: "completed" },
+                        { id: "worktree-run", ordinal: 2, status: "completed" },
+                      ],
+                      checkpoints: [],
+                      checkpointScopes:
+                        owner === "moved" || owner === "selected"
+                          ? [
+                              { id: scopeId, runId: "root-run", kind: "root_run", cwd: parent },
+                              ...(owner === "moved"
+                                ? [{ id: "here", runId: "worktree-run", kind: "root_run", cwd }]
+                                : []),
+                            ]
+                          : [],
+                    } as never)
+                  : owner === "moved-away"
+                    ? ({
+                        runs: [
+                          { id: "other-run-1", ordinal: 1, status: "completed" },
+                          { id: "other-run-2", ordinal: 2, status: "completed" },
+                        ],
+                        checkpoints: [],
+                        checkpointScopes: [
+                          { id: "other-scope-1", runId: "other-run-1", kind: "root_run", cwd },
+                          {
+                            id: "other-scope-2",
+                            runId: "other-run-2",
+                            kind: "root_run",
+                            cwd: sibling,
+                          },
+                        ],
+                      } as never)
+                    : { runs: [], checkpoints: [], checkpointScopes: [] },
+              ),
             getThreadProviderContext: () =>
               Effect.succeed({
                 thread: otherThread as never,
@@ -141,10 +179,15 @@ it.effect.each([
               }),
           }),
           Layer.mock(CheckpointServiceV2)({
-            restore: () =>
+            restore: ({ scope }) =>
               Effect.gen(function* () {
-                calls.push("files");
+                calls.push(scope.cwd === cwd ? "files" : `files in ${scope.cwd}`);
                 yield* fs.remove(otherFile).pipe(Effect.orDie);
+              }),
+            // The project root the turn ran in may be gone: refs go through the worktree too.
+            deleteStaleRefs: ({ scope }) =>
+              Effect.sync(() => {
+                calls.push(scope.cwd === cwd ? "refs" : `refs in ${scope.cwd}`);
               }),
           }),
           Layer.mock(EventSinkV2)({ write: () => Effect.succeed([]) }),
@@ -166,7 +209,13 @@ it.effect.each([
       Effect.provide(layerTest),
     );
     const restoreFiles = owner !== "conversation";
-    const rejected = !["sibling", "shared-provider", "conversation"].includes(owner);
+    const rejected = ![
+      "sibling",
+      "shared-provider",
+      "conversation",
+      "moved",
+      "moved-away",
+    ].includes(owner);
     if (rejected) {
       const error = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
@@ -176,7 +225,11 @@ it.effect.each([
       assert.equal(yield* fs.readFileString(otherFile), "other thread's uncommitted work");
     } else {
       yield* service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles });
-      assert.deepEqual(calls, restoreFiles ? ["provider", "files"] : ["provider"]);
+      assert.deepEqual(calls, [
+        "provider",
+        ...(restoreFiles ? ["files"] : []),
+        ...(owner === "moved" ? ["refs"] : []),
+      ]);
       assert.equal(yield* fs.exists(otherFile), !restoreFiles);
     }
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

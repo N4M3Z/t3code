@@ -29,7 +29,11 @@ import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
-import { CheckpointRestoreError, CheckpointServiceV2 } from "./CheckpointService.ts";
+import {
+  CheckpointRestoreError,
+  CheckpointServiceV2,
+  latestRootScope,
+} from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
@@ -222,7 +226,14 @@ export const layer: Layer.Layer<
             });
 
       const restoreFiles = input.restoreFiles !== false;
-      const isolated = isCheckpointRestoreIsolated(context.thread, scope, {
+      // Files restore into the folder the thread ran in last, also for a turn from another one.
+      // Linked worktrees share checkpoint refs, so that folder reaches them when the turn's is gone.
+      const restoreScope = {
+        ...scope,
+        cwd: (latestRootScope(yield* projections.getCheckpointContext(input.threadId)) ?? scope)
+          .cwd,
+      };
+      const isolated = isCheckpointRestoreIsolated(context.thread, restoreScope, {
         fileSystem,
         projections,
         projects,
@@ -340,9 +351,11 @@ export const layer: Layer.Layer<
               target: rollbackTarget,
               providerThreadTurns,
             });
-      if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
+      if (input.restoreFiles !== false) {
+        yield* checkpoints.restore({ scope: restoreScope, checkpoint });
+      }
       if (staleCheckpoints.length > 0) {
-        yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });
+        yield* checkpoints.deleteStaleRefs({ scope: restoreScope, checkpoints: staleCheckpoints });
       }
 
       // Lock against full-row thread writes that could restore the old native session after rollback.

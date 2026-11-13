@@ -1,5 +1,10 @@
+import * as NodeOS from "node:os";
+
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointId,
+  CheckpointRef,
+  CheckpointScopeId,
   CommandId,
   MessageId,
   EventId,
@@ -35,9 +40,11 @@ import {
 } from "../observability/Metrics.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import { SHARED_WORKSPACE_RESTORE_MESSAGE } from "./CheckpointRestoreSafety.ts";
 import * as DelegatedTaskQuestionReactor from "./DelegatedTaskQuestionReactor.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import { latestRootScope } from "./CheckpointService.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -449,6 +456,332 @@ it.effect("marks a never-visited thread's first completion unread", () =>
       ended.lastVisitedAt,
     );
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("starts a root checkpoint scope when the thread's folder changes", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:folder-scope");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-folder-scope"),
+      threadId,
+      projectId: ProjectId.make("project:folder-scope"),
+      title: "Hand off to a worktree",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    // Each run ends before the next starts, as a handoff ends the turn that asked for it.
+    const runScope = Effect.fn("test.runScope")(function* (id: string) {
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(id),
+        threadId,
+        messageId: MessageId.make(id),
+        text: "Continue",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const { runs, nodes, checkpointScopes } = yield* projections.getThreadProjection(threadId);
+      const run = runs.at(-1)!;
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make(`interrupt-${id}`),
+        threadId,
+        runId: run.id,
+      });
+      const rootNode = nodes.find((node) => node.id === run.rootNodeId);
+      return checkpointScopes.find((scope) => scope.id === rootNode?.checkpointScopeId)!;
+    });
+
+    const first = yield* runScope("folder-scope-1");
+    assert.strictEqual((yield* runScope("folder-scope-2")).id, first.id);
+
+    // The worktree handoff moves a thread with turns by this command.
+    const worktreePath = NodeOS.tmpdir();
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("move-folder-scope"),
+      threadId,
+      worktreePath,
+    });
+    const moved = yield* runScope("folder-scope-3");
+    assert.notStrictEqual(moved.id, first.id);
+    assert.strictEqual(moved.cwd, worktreePath);
+    assert.strictEqual((yield* runScope("folder-scope-4")).id, moved.id);
+    const { checkpointScopes } = yield* projections.getThreadProjection(threadId);
+    assert.deepEqual(
+      checkpointScopes.map((scope) => scope.cwd).toSorted(),
+      [first.cwd, worktreePath].toSorted(),
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+// On main a thread has one scope, which every dispatch rewrites, and a queued run starts in it.
+it.effect.each([
+  { name: "no-write", dispatchAfterMove: false },
+  { name: "write", dispatchAfterMove: true },
+])(
+  "starts a queued run in the scope written last (dispatch after the move: $dispatchAfterMove)",
+  ({ name, dispatchAfterMove }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make(`thread:queued-scope-${name}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-queued-scope-${name}`),
+        threadId,
+        projectId: ProjectId.make(`project:queued-scope-${name}`),
+        title: "Queue, then move",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const send = (id: string, type: "start_immediately" | "queue_after_active") =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`queued-scope-${name}-${id}`),
+          threadId,
+          messageId: MessageId.make(`queued-scope-${name}-${id}`),
+          text: "Continue",
+          attachments: [],
+          dispatchMode: { type },
+          createdBy: "user",
+          creationSource: "web",
+        });
+      const scopeOf = Effect.fn("test.scopeOf")(function* (ordinal: number) {
+        const projection = yield* projections.getThreadProjection(threadId);
+        const run = projection.runs.find((candidate) => candidate.ordinal === ordinal)!;
+        const rootNode = projection.nodes.find((node) => node.id === run.rootNodeId);
+        return {
+          run,
+          scope: projection.checkpointScopes.find(
+            (scope) => scope.id === rootNode?.checkpointScopeId,
+          ),
+          latest: latestRootScope(projection),
+        };
+      });
+
+      yield* send("1", "start_immediately");
+      yield* send("2", "queue_after_active");
+      const queued = yield* scopeOf(2);
+      assert.strictEqual(queued.run.status, "queued");
+      assert.isDefined(queued.scope);
+
+      const worktreePath = NodeOS.tmpdir();
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`move-queued-scope-${name}`),
+        threadId,
+        worktreePath,
+      });
+      if (dispatchAfterMove) yield* send("3", "queue_after_active");
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make(`interrupt-queued-scope-${name}`),
+        threadId,
+        runId: (yield* scopeOf(1)).run.id,
+      });
+      yield* orchestrator.dispatch({
+        type: "queue.resume",
+        commandId: CommandId.make(`resume-queued-scope-${name}`),
+        threadId,
+      });
+      const started = yield* scopeOf(2);
+      assert.notStrictEqual(started.run.status, "queued");
+      assert.strictEqual(started.scope?.id, started.latest?.id);
+      // Only a dispatch writes a scope. Without one, the thread's scope is the one from before.
+      assert.strictEqual(started.scope?.cwd, dispatchAfterMove ? worktreePath : queued.scope?.cwd);
+    }).pipe(Effect.provide(layerTest)),
+);
+
+// A turn ran in the project root, and the thread's worktree was selected after it.
+it.effect.each([
+  { ranInWorktree: true, admitted: true },
+  { ranInWorktree: false, admitted: false },
+])(
+  "restores a turn from another folder only into the folder the thread ran in last (%o)",
+  ({ ranInWorktree, admitted }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const name = `moved-restore-${ranInWorktree}`;
+      const threadId = ThreadId.make(`thread:${name}`);
+      const providerThreadId = ProviderThreadId.make(`provider-thread:${name}`);
+      const scopeId = CheckpointScopeId.make(`scope:${name}`);
+      const checkpointId = CheckpointId.make(`checkpoint:${name}`);
+      const runId = RunId.make(`run:${name}`);
+      const worktreeRunId = RunId.make(`run:${name}:worktree`);
+      const nodeId = NodeId.make(`node:${name}`);
+      const now = yield* DateTime.now;
+      const scope = (
+        id: CheckpointScopeId,
+        run: RunId,
+        cwd: string,
+        ordinalWithinParent: number,
+      ) => ({
+        type: "checkpoint-scope.created" as const,
+        payload: {
+          id,
+          threadId,
+          runId: run,
+          nodeId,
+          parentScopeId: null,
+          providerThreadId,
+          kind: "root_run" as const,
+          ordinalWithinParent,
+          advancesAppRunCount: true,
+          cwd,
+          // The worktree's scope was written after the project root's.
+          createdAt: DateTime.add(now, { seconds: ordinalWithinParent }),
+        },
+      });
+      const run = (id: RunId, ordinal: number) => ({
+        type: "run.created" as const,
+        runId: id,
+        nodeId,
+        providerInstanceId: instanceId,
+        payload: {
+          id,
+          threadId,
+          ordinal,
+          providerInstanceId: instanceId,
+          modelSelection,
+          providerThreadId,
+          userMessageId: MessageId.make(`message:${id}`),
+          rootNodeId: nodeId,
+          activeAttemptId: null,
+          status: "completed" as const,
+          requestedAt: now,
+          startedAt: now,
+          completedAt: now,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      });
+      const events: ReadonlyArray<
+        Omit<OrchestrationV2DomainEvent, "id" | "threadId" | "occurredAt">
+      > = [
+        {
+          type: "thread.created",
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId: ProjectId.make(`project:${name}`),
+            title: "Moved to a worktree",
+            providerInstanceId: instanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: process.cwd(),
+            activeProviderThreadId: null,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        },
+        {
+          type: "provider-thread.updated",
+          payload: {
+            id: providerThreadId,
+            appThreadId: threadId,
+            driver: adapter.driver,
+            providerInstanceId: instanceId,
+            providerSessionId: ProviderSessionId.make(`session:${name}`),
+            ownerNodeId: null,
+            nativeThreadRef: null,
+            nativeConversationHeadRef: null,
+            lastRunOrdinal: 1,
+            handoffIds: [],
+            forkedFrom: null,
+            status: "idle",
+            firstRunOrdinal: 1,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+        run(runId, 1),
+        scope(scopeId, runId, "/moved-restore/project-root", 0),
+        {
+          type: "checkpoint.captured",
+          payload: {
+            id: checkpointId,
+            threadId,
+            scopeId,
+            runId: null,
+            nodeId,
+            parentCheckpointId: null,
+            ordinalWithinScope: 0,
+            appRunOrdinal: null,
+            ref: CheckpointRef.make(`refs/t3/${name}`),
+            status: "ready",
+            files: [],
+            capturedAt: now,
+          },
+        },
+        ...(ranInWorktree
+          ? [
+              run(worktreeRunId, 2),
+              scope(
+                CheckpointScopeId.make(`scope:${name}:worktree`),
+                worktreeRunId,
+                process.cwd(),
+                1,
+              ),
+            ]
+          : []),
+      ];
+      for (const [index, event] of events.entries()) {
+        yield* projections.apply({
+          ...event,
+          id: EventId.make(`event:${name}:${index}`),
+          threadId,
+          occurredAt: now,
+        } as OrchestrationV2DomainEvent);
+      }
+
+      const rollback = orchestrator.dispatch({
+        type: "checkpoint.rollback",
+        commandId: CommandId.make(`rollback-${name}`),
+        threadId,
+        checkpointId,
+        scopeId,
+        restoreFiles: true,
+      });
+      if (admitted) {
+        assert.include(
+          (yield* rollback).storedEvents.map((stored) => stored.event.type),
+          "checkpoint.rollback-requested",
+        );
+      } else {
+        // The snapshot must not land in a worktree the thread has not run in.
+        assert.deepInclude(yield* rollback.pipe(Effect.flip), {
+          _tag: "OrchestratorDispatchError",
+          cause: SHARED_WORKSPACE_RESTORE_MESSAGE,
+        });
+      }
+    }).pipe(Effect.provide(layerTest)),
 );
 
 const completeAndSnoozeThread = Effect.fn("test.completeAndSnoozeThread")(function* (

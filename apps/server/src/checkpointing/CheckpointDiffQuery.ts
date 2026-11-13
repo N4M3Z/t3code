@@ -14,7 +14,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import { CHECKPOINT_DIFF_MAX_OUTPUT_BYTES } from "../vcs/VcsDriver.ts";
-import { checkpointRefForScopeOrdinal } from "../orchestration-v2/CheckpointService.ts";
+import {
+  checkpointRefForScopeOrdinal,
+  latestRootScope,
+} from "../orchestration-v2/CheckpointService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import {
   CheckpointDiffResultInvalidError,
@@ -175,24 +178,21 @@ export const make = Effect.gen(function* () {
             )
           : undefined;
 
-      const firstScope =
-        input.fromTurnCount === 0
-          ? projection.checkpointScopes.find((scope) => scope.kind === "root_run")
-          : undefined;
+      const fromCheckpoint =
+        parentCheckpoint ??
+        readyCheckpoints.find((checkpoint) => checkpoint.appRunOrdinal === input.fromTurnCount);
+      const fromScope = projection.checkpointScopes.find(
+        (scope) => scope.id === fromCheckpoint?.scopeId,
+      );
+      // Ordinal 0 of a scope is its folder when the thread first ran there. A snapshot from another
+      // folder is another checkout, so a diff that reaches back to one starts at ordinal 0 too.
       const fromCheckpointRef =
-        input.fromTurnCount === 0
-          ? firstScope === undefined
-            ? undefined
-            : yield* checkpointRefForScopeOrdinal({
-                scopeId: firstScope.id,
-                ordinalWithinScope: 0,
-              }).pipe(Effect.provideService(Digest.Digest, digest))
-          : (
-              parentCheckpoint ??
-              readyCheckpoints.find(
-                (checkpoint) => checkpoint.appRunOrdinal === input.fromTurnCount,
-              )
-            )?.ref;
+        input.fromTurnCount === 0 || (fromScope !== undefined && fromScope.cwd !== toScope.cwd)
+          ? yield* checkpointRefForScopeOrdinal({
+              scopeId: toScope.id,
+              ordinalWithinScope: 0,
+            }).pipe(Effect.provideService(Digest.Digest, digest))
+          : fromCheckpoint?.ref;
       if (fromCheckpointRef === undefined) {
         return yield* new CheckpointRefUnavailableError({
           operation,
@@ -203,7 +203,8 @@ export const make = Effect.gen(function* () {
       }
 
       const comparison = {
-        cwd: toScope.cwd,
+        // Linked worktrees share the refs, and the folder an earlier turn ran in can be gone.
+        cwd: (latestRootScope(projection) ?? toScope).cwd,
         fromCheckpointRef,
         toCheckpointRef: toCheckpoint.ref,
         fallbackFromToHead: false,

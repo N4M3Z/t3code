@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
+import { latestRootScope } from "./CheckpointService.ts";
 import type { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import type * as ProjectStore from "./ProjectStore.ts";
 
@@ -65,9 +66,13 @@ export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpoi
           }
           const other = yield* projections.getCheckpointContext(otherThread.id);
           const providerContext = yield* projections.getThreadProviderContext(otherThread.id);
+          // A thread that changed folder keeps a scope for each one. Only the last still counts.
+          const currentScope = latestRootScope(other);
           const paths = [
             otherThread.worktreePath,
-            ...other.checkpointScopes.map((candidate) => candidate.cwd),
+            ...other.checkpointScopes
+              .filter((candidate) => candidate.kind !== "root_run" || candidate === currentScope)
+              .map((candidate) => candidate.cwd),
             // Errored sessions can still stream. Shared sessions retain another thread's opening cwd;
             // turn worktrees and project roots are already covered here.
             ...providerContext.providerSessions

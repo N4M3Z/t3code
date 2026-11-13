@@ -105,19 +105,42 @@ export const layer: Layer.Layer<
         preservedCheckpointOrdinals.includes(ordinalWithinScope);
       // The baselines this capture materializes are attributed to the run materializing them. The
       // thread's scope may already be a later run's: one queued meanwhile, or sent after Stop.
-      const materializeBaseline = (ordinalWithinScope: number) =>
+      const materializeBaseline = (target: typeof scope, ordinalWithinScope: number) =>
         checkpoints.materializeBaselineCheckpoint({
-          scope,
+          scope: target,
           ordinalWithinScope,
           nodeId: rootNode.id,
           capturedAt: run.requestedAt,
           forceMissing: sideChat,
         });
+      // A thread has one thread start, in its first scope. In a folder the thread moved to,
+      // ordinal 0 is only the snapshot that diffs start at.
+      const movedHere = scope.ordinalWithinParent !== 0;
+      const threadStart = movedHere
+        ? yield* projections
+            .getCheckpointCaptureContext(input.threadId, {
+              runId: input.runId,
+              scopeId: yield* ids.allocate.checkpointScope({
+                threadId: input.threadId,
+                name: CheckpointService.ROOT_CHECKPOINT_SCOPE_NAME,
+              }),
+            })
+            .pipe(
+              Effect.map((first) => ({
+                // Linked worktrees share the ref, and the first folder can be gone by now.
+                scope: first.scope === undefined ? undefined : { ...first.scope, cwd: scope.cwd },
+                preserved: first.preservedCheckpointOrdinals.includes(0),
+              })),
+            )
+        : { scope, preserved: baselineOrdinalWithinScope === 0 || isPreserved(0) };
       const threadStartCheckpoint =
-        baselineOrdinalWithinScope === 0 || isPreserved(0) ? null : yield* materializeBaseline(0);
-      const baselineCheckpoint = isPreserved(baselineOrdinalWithinScope)
-        ? null
-        : yield* materializeBaseline(baselineOrdinalWithinScope);
+        threadStart.scope === undefined || threadStart.preserved
+          ? null
+          : yield* materializeBaseline(threadStart.scope, 0);
+      const baselineCheckpoint =
+        isPreserved(baselineOrdinalWithinScope) || (movedHere && baselineOrdinalWithinScope === 0)
+          ? null
+          : yield* materializeBaseline(scope, baselineOrdinalWithinScope);
       const checkpoint = yield* checkpoints.capture({
         scope,
         runId: run.id,

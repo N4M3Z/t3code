@@ -1136,6 +1136,7 @@ export const OrchestrationV2ProviderThread = Schema.Struct({
   ownerNodeId: Schema.NullOr(NodeId),
   nativeThreadRef: Schema.NullOr(OrchestrationV2ProviderRef),
   nativeConversationHeadRef: Schema.NullOr(OrchestrationV2ProviderRef),
+  nativeStorageFolder: Schema.optional(TrimmedNonEmptyString),
   status: Schema.Literals(["not_loaded", "idle", "active", "archived", "closed", "error"]),
   firstRunOrdinal: Schema.NullOr(PositiveInt),
   lastRunOrdinal: Schema.NullOr(PositiveInt),

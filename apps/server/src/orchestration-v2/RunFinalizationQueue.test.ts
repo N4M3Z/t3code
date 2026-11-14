@@ -103,6 +103,7 @@ it.effect.each([
         Layer.mock(EventSink.EventSinkV2)({}),
         IdAllocator.layer,
         NodeServices.layer,
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
         ServerSettings.layerTest(),
         Layer.mock(ProviderTurnStart.ProviderTurnStartServiceV2)({
           start: () => Effect.sync(() => calls.push("start")).pipe(Effect.asVoid),

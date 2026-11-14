@@ -34,11 +34,13 @@ import { withTurnStartReservation, withWorkspaceLease } from "../workspace/works
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import { findRepositoryRoot } from "../provider/Drivers/ClaudeSkills.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeRestoreMissingWorktree } from "../workspace/restoreMissingWorktree.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
+import { rootCheckpointScopeName } from "./CheckpointService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
@@ -717,11 +719,23 @@ export const layer: Layer.Layer<
         });
         if (!repaired.committed) return;
       }
+      // A thread that moved starts its turn in a new folder, and the run's checkpoints belong there.
+      const startCheckpointScope =
+        resolvedRuntimePolicy.cwd === null || resolvedRuntimePolicy.cwd === checkpointScope.cwd
+          ? checkpointScope
+          : {
+              ...checkpointScope,
+              id: yield* idAllocator.allocate.checkpointScope({
+                threadId: projection.thread.id,
+                name: rootCheckpointScopeName(resolvedRuntimePolicy.cwd),
+              }),
+              cwd: resolvedRuntimePolicy.cwd,
+            };
       // Opening a session does not prompt the provider, so the workspace is still unchanged.
       const baseline = yield* runExecution.forkBaseline({
         appThread: projection.thread,
         run,
-        checkpointScope,
+        checkpointScope: startCheckpointScope,
       });
       const sessionResult = yield* Effect.result(
         providerSessions.open({
@@ -1500,8 +1514,18 @@ export const layer: Layer.Layer<
         createdAt: providerThread.createdAt,
         updatedAt: now,
       };
+      const repositoryRoot =
+        projection.thread.worktreePath === null && resolvedRuntimePolicy.cwd !== null
+          ? yield* findRepositoryRoot(resolvedRuntimePolicy.cwd).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            )
+          : undefined;
       const runningRun: OrchestrationV2Run = {
         ...run,
+        ...(resolvedRuntimePolicy.cwd === null
+          ? {}
+          : { cwd: resolvedRuntimePolicy.cwd, repositoryRoot }),
         status: "running",
         startedAt: now,
       };
@@ -1515,6 +1539,7 @@ export const layer: Layer.Layer<
       };
       const runningRootNode: OrchestrationV2ExecutionNode = {
         ...rootNode,
+        checkpointScopeId: startCheckpointScope.id,
         status: "running",
         startedAt: now,
       };
@@ -1566,6 +1591,20 @@ export const layer: Layer.Layer<
                   updatedAt: now,
                   consumedAt: now,
                 },
+              },
+            ]),
+        ...(startCheckpointScope === checkpointScope
+          ? []
+          : [
+              {
+                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                type: "checkpoint-scope.created" as const,
+                threadId: projection.thread.id,
+                runId: run.id,
+                nodeId: rootNode.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: startCheckpointScope,
               },
             ]),
         // Shown only once the replacement session commits with the running transition.
@@ -1764,7 +1803,7 @@ export const layer: Layer.Layer<
         session: deliverySession,
         run: runningRun,
         rootNode: runningRootNode,
-        checkpointScope,
+        checkpointScope: startCheckpointScope,
         providerThread: runningProviderThread,
         attempt: runningAttempt,
         attemptId: attempt.id,

@@ -3,6 +3,7 @@ import { applyOrchestrationV2ThreadVisit, pendingGuestMessageCount } from "@t3to
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
+import * as Struct from "effect/Struct";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { makeThreadFind } from "./ThreadFind.ts";
 import { unsentManualContinuationSource } from "./manualContinuation.ts";
@@ -417,7 +418,7 @@ const inheritsForkConversation = ({
 
 export type ProjectionRecordField = Exclude<
   keyof OrchestrationV2ThreadProjection,
-  "thread" | "updatedAt" | "visibleTurnItems"
+  "thread" | "updatedAt" | "visibleTurnItems" | "runFolders"
 >;
 export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
   OrchestrationV2ThreadProjection,
@@ -1588,6 +1589,17 @@ function inheritedRunFork(thread: Pick<OrchestrationV2AppThread, "forkedFrom" | 
     : null;
 }
 
+type RunFolder = Pick<OrchestrationV2Run, "id" | "cwd" | "repositoryRoot">;
+
+function runFoldersFor(runs: ReadonlyArray<RunFolder>, runIds: ReadonlySet<RunId | null>) {
+  const runFolders = runs.flatMap((run) =>
+    run.cwd === undefined || !runIds.has(run.id)
+      ? []
+      : [Struct.pick(run, ["id", "cwd", "repositoryRoot"])],
+  );
+  return runFolders.length === 0 ? {} : { runFolders };
+}
+
 function buildVisibleTurnItems(input: {
   readonly projection: OrchestrationV2ThreadProjection;
   readonly sourceProjection: OrchestrationV2ThreadProjection | null;
@@ -2256,6 +2268,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       readonly threadIds: ReadonlyArray<ThreadId>;
       readonly local: ReadonlyArray<TimelineIndexRow>;
       readonly visible: ReadonlyArray<TimelineIndexRow>;
+      /** The runs of the thread and of every fork source, for the folders of inherited rows. */
+      readonly runs: ReadonlyArray<OrchestrationV2Run>;
     };
     // Least recently used first; a few cover clients scrolling side by side without pinning every thread.
     const TIMELINE_INDEX_CACHE_LIMIT = 8;
@@ -4555,12 +4569,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           new Set([...seenThreadIds, threadId]),
           sourceWindow,
         );
+        const visibleTurnItems = buildVisibleTurnItems({
+          projection,
+          sourceProjection,
+        });
         return {
           ...projection,
-          visibleTurnItems: buildVisibleTurnItems({
-            projection,
-            sourceProjection,
-          }),
+          visibleTurnItems,
+          ...runFoldersFor(
+            [...sourceProjection.runs, ...(sourceProjection.runFolders ?? [])],
+            new Set(visibleTurnItems.map((row) => row.item.runId)),
+          ),
         };
       },
       (effect, threadId, _seenThreadIds, _window?) =>
@@ -6460,7 +6479,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         const visible = local.filter((row) => isVisible(row.item));
         const fork = inheritedRunFork(records.thread);
         if (fork === null || seen.has(fork.threadId))
-          return { records, threadIds: [threadId], local, visible };
+          return { records, threadIds: [threadId], local, visible, runs: records.runs };
         const source = yield* readTimelineIndex(
           fork.threadId,
           new Set([...seen, threadId]),
@@ -6500,6 +6519,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           records,
           threadIds: [threadId, ...source.threadIds],
           local,
+          runs: [...records.runs, ...source.runs],
           visible: [
             ...inherited,
             {
@@ -7243,6 +7263,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               items: conversationOnly
                 ? pageItems.filter((row) => isConversationHistoryItem(row.item))
                 : pageItems,
+              // A local timeline has no fork ancestry, so the thread's own runs cover its rows.
+              ...runFoldersFor(
+                full === null ? (local?.records.runs ?? []) : full.runs,
+                new Set(pageItems.map((row) => row.item.runId)),
+              ),
               nextCursor: bounded.hasMoreHistory ? bounded.nextCursor : page.nextCursor,
               hasMoreHistory: bounded.hasMoreHistory || page.hasMoreHistory,
             };

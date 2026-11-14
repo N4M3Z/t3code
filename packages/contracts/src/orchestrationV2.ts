@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import * as Struct from "effect/Struct";
 
 import {
   CheckpointId,
@@ -758,6 +759,8 @@ export const OrchestrationV2Run = Schema.Struct({
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
+  cwd: Schema.optional(Schema.String),
+  repositoryRoot: Schema.optional(Schema.String),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 
@@ -2127,9 +2130,14 @@ export const OrchestrationV2DomainEvent = Schema.Union([
 ]);
 export type OrchestrationV2DomainEvent = typeof OrchestrationV2DomainEvent.Type;
 
+const OrchestrationV2RunFolder = OrchestrationV2Run.mapFields(
+  Struct.pick(["id", "cwd", "repositoryRoot"]),
+);
+
 export const OrchestrationV2ThreadProjection = Schema.Struct({
   thread: OrchestrationV2AppThread,
   runs: Schema.Array(OrchestrationV2Run),
+  runFolders: Schema.optional(Schema.Array(OrchestrationV2RunFolder)),
   attempts: Schema.Array(OrchestrationV2RunAttempt),
   nodes: Schema.Array(OrchestrationV2ExecutionNode),
   subagents: Schema.Array(OrchestrationV2Subagent),
@@ -4106,6 +4114,7 @@ export const OrchestrationV2ThreadHistoryPage = withRecordIdTable(
         item: ForwardCompatibleUnion(OrchestrationV2TurnItem.members, "type"),
       })),
     ),
+    runFolders: Schema.optional(Schema.Array(OrchestrationV2RunFolder)),
     nextCursor: Schema.NullOr(TrimmedNonEmptyString),
     hasMoreHistory: Schema.Boolean,
     idTable: IdTableMarker,

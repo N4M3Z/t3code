@@ -1056,6 +1056,9 @@ function makeLocalCommandHarness(input: {
           )
         : Effect.die("A local command must not start a native turn."),
   );
+  const forkBaseline = vi.fn<RunExecutionService.RunExecutionServiceV2Shape["forkBaseline"]>(() =>
+    Effect.succeed(Effect.void),
+  );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
     projection.runs.find((candidate) => candidate.id === runId)?.status === "running"
@@ -1223,7 +1226,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({
           startRootRun,
-          forkBaseline: () => Effect.succeed(Effect.void),
+          forkBaseline,
         }),
         Layer.succeed(ProviderUsageAnalytics.ProviderTurnAnalytics, {
           runStarted: () => Effect.void,
@@ -1250,6 +1253,7 @@ function makeLocalCommandHarness(input: {
     fallbackEnsureThread,
     writeIfRunCurrent,
     startRootRun,
+    forkBaseline,
     startTurn,
     forkThread,
     interruptTurn,
@@ -1862,6 +1866,7 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         fileSystem,
         failReadsAfterRunning: true,
       });
+      const dispatchedScopeId = harness.projection().checkpointScopes[0]!.id;
       harness.createWorktree.mockImplementation(() =>
         fileSystem.makeDirectory(worktreePath).pipe(Effect.as({} as never), Effect.orDie),
       );
@@ -1920,9 +1925,23 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
           runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
         }),
       );
+      const startedScope = harness.startRootRun.mock.calls[0]![0].checkpointScope;
+      expect(startedScope.cwd).toBe(worktreePath);
+      expect(startedScope.id).not.toBe(dispatchedScopeId);
+      // The baseline is captured before the session opens, and it belongs to the same folder.
+      expect(harness.forkBaseline).toHaveBeenCalledWith(
+        expect.objectContaining({ checkpointScope: startedScope }),
+      );
+      expect(harness.projection().nodes.at(-1)?.checkpointScopeId).toBe(startedScope.id);
+      expect(harness.projection().runs.at(-1)).toMatchObject({
+        cwd: worktreePath,
+        repositoryRoot: undefined,
+      });
       expect(harness.startRootRun).toHaveBeenCalledWith(
         expect.objectContaining({
           appThread: expect.objectContaining({ worktreePath }),
+          run: expect.objectContaining({ cwd: worktreePath }),
+          checkpointScope: startedScope,
           runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
         }),
       );
@@ -2332,11 +2351,20 @@ effectIt.effect("fails the run instead of replacing a native thread another clie
 
 effectIt.effect("does not mistake a failed state read for a superseded run", () =>
   Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({ text: "Continue", failReadsAfterRunning: true });
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      fileSystem: FileSystem.makeNoop({ exists: (path) => Effect.succeed(path === "/tmp/.git") }),
+      failReadsAfterRunning: true,
+    });
 
     yield* harness.start;
 
-    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    expect(harness.projection().runs.at(-1)).toMatchObject({
+      status: "running",
+      cwd: "/tmp/native-account-command",
+      repositoryRoot: "/tmp",
+    });
+    expect(harness.events.map((event) => event.type)).not.toContain("checkpoint-scope.created");
     const controls = harness.startRootRun.mock.calls[0]?.[0];
     expect(controls).toBeDefined();
     if (controls === undefined) return;

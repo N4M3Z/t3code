@@ -109,6 +109,11 @@ describe("orchestration V2 contracts", () => {
     });
     const known = item("item-known", "system_notice", { message: "Hello" });
     const future = item("item-future", "hologram", { beam: "ref-1" });
+    const notice = item("item-notice", "system_notice", { message: "Moved", previousFolder: "/a" });
+    expect(decodeOrchestrationV2TurnItemJson(known)).not.toHaveProperty("previousFolder");
+    expect(encodeOrchestrationV2TurnItemJson(decodeOrchestrationV2TurnItemJson(notice))).toEqual(
+      notice,
+    );
     const projected = (position: number, turnItem: { readonly id: string }) => ({
       position,
       visibility: "local",
@@ -226,7 +231,7 @@ describe("orchestration V2 contracts", () => {
     ).toThrow();
   });
 
-  it("decodes persisted capability snapshots that predate runtimePolicy", () => {
+  it("decodes persisted capability snapshots that predate runtimePolicy and supportsFolderMove", () => {
     const legacyCapabilities = {
       sessions: {
         supportsMultipleProviderThreadsPerSession: false,
@@ -323,9 +328,11 @@ describe("orchestration V2 contracts", () => {
 
     const explicit = decodeOrchestrationV2ProviderCapabilities({
       ...legacyCapabilities,
+      sessions: { ...legacyCapabilities.sessions, supportsFolderMove: true },
       runtimePolicy: { enforcement: "native" },
     });
     expect(explicit.runtimePolicy).toEqual({ enforcement: "native" });
+    expect(explicit.sessions.supportsFolderMove).toBe(true);
   });
 
   it.each(["  indented prompt\n", "\n \t\n"])(

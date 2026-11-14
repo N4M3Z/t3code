@@ -2427,7 +2427,7 @@ it("opens a row's relative links under its run's folder", async () => {
     />
   );
   using _threadShell = vi
-    .spyOn(environmentThreadShells, "threadShellAtom")
+    .spyOn(environmentThreadShells, "quietThreadShellAtom")
     .mockReturnValue(Atom.make({ environmentId: ENVIRONMENT_ID, projectId: "project-w" }) as never);
   using _project = vi
     .spyOn(environmentProjects, "projectAtom")

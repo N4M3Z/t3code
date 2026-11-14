@@ -71,7 +71,8 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
               `;
           const runOrdinal = suppliedRunOrdinal ?? runRows[0]?.ordinal ?? null;
           const lowerBound = runOrdinal === null ? 0 : runOrdinal * 1_000_000;
-          const upperBound = runOrdinal === null ? 999_999 : lowerBound + 999_999;
+          // An item with no run goes after everything the thread already holds.
+          const upperBound = runId === null ? Number.MAX_SAFE_INTEGER : lowerBound + 999_999;
           const current = existing[0]?.ordinal;
           if (current !== undefined) {
             // A steer that missed its turn starts the next run; it moves into that run's range.

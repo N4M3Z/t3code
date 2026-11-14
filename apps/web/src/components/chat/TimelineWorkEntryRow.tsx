@@ -59,7 +59,9 @@ import { ThreadMoveReceiptDetails } from "./ThreadMoveReceiptDetails";
 import {
   TimelineRowCtx,
   TimelineRowActivityCtx,
+  TimelineRowFolderCtx,
   WorkGroupViewCtx,
+  useTimelineRowWorkspaceRoot,
   type TimelineRow,
   type TimelineWorkEntry,
 } from "./timelineRowContext";
@@ -129,6 +131,7 @@ const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation(
 
 export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<TimelineWorkEntry> }) {
   const ctx = use(TimelineRowCtx);
+  const rowFolder = use(TimelineRowFolderCtx)?.cwd;
   const { isWorking, latestRunId } = use(TimelineRowActivityCtx);
   const isStreaming = (entry: TimelineWorkEntry) =>
     isWorking && entry.runId === latestRunId && entry.toolLifecycleStatus === "inProgress";
@@ -140,6 +143,7 @@ export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<Time
           className="text-foreground"
           text={entry.detail ?? ""}
           cwd={ctx.markdownCwd}
+          fileLinkBaseDir={rowFolder}
           threadRef={ctx.threadRef ?? undefined}
           skills={ctx.skills}
           isStreaming={isStreaming(entry)}
@@ -188,7 +192,8 @@ export function ViewedImagesTimelineRow({
 }: {
   row: Extract<TimelineRow, { kind: "viewed-images" }>;
 }) {
-  const { threadRef, workspaceRoot, onImageExpand } = use(TimelineRowCtx);
+  const { threadRef, workspaceRoot: threadWorkspaceRoot, onImageExpand } = use(TimelineRowCtx);
+  const workspaceRoot = useTimelineRowWorkspaceRoot();
   if (!threadRef) return null;
   return (
     <div className="flex flex-wrap items-start gap-2 px-0.5" data-image-gallery>
@@ -205,6 +210,7 @@ export function ViewedImagesTimelineRow({
             alt={image.alt}
             srcFragment={image.srcFragment}
             workspaceRoot={workspaceRoot}
+            threadWorkspaceRoot={threadWorkspaceRoot}
             maxHeightRem={10}
             onImageExpand={onImageExpand}
           />
@@ -534,6 +540,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                     THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
                   )}
                   cwd={ctx.markdownCwd}
+                  fileLinkBaseDir={use(TimelineRowFolderCtx)?.cwd}
                   parseRawHtml={false}
                   extraRemarkPlugins={
                     workEntry.toolLifecycleStatus === "inProgress"
@@ -623,6 +630,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             alt={viewedImage.alt}
             srcFragment={viewedImage.srcFragment}
             workspaceRoot={workspaceRoot}
+            threadWorkspaceRoot={ctx.workspaceRoot}
             maxHeightRem={16}
             onImageExpand={expandImage}
           />

@@ -2305,3 +2305,30 @@ it("keeps concurrent approvals actionable outside collapsed work and restores se
     .element(screen.getByRole("button", { name: "Open the current tab", exact: true }))
     .toBeVisible();
 });
+
+it("shows the full folders in an expanded move receipt", async () => {
+  const detail = [
+    'It came from project "A", which has its root at `/repos/a`.',
+    "The next turn runs in `` /repos/b`c ``.",
+    "Open terminals keep their folder.",
+  ].join("\n");
+  await using screen = await renderTimeline([
+    work("move-receipt", {
+      itemType: "system_notice",
+      label: "Moved to B",
+      detail,
+      projectedItem: v2Item("system_notice", {
+        id: "move-receipt",
+        message: `Moved to B.\n${detail}`,
+        previousFolder: "/repos/a",
+      }),
+    }),
+  ]);
+  expect(screen.text()).not.toContain("/repos/a");
+  await click(screen.button("Moved to B"));
+  await vi.waitFor(() =>
+    expect(screen.text()).toContain('It came from project "A", which has its root at /repos/a.'),
+  );
+  const paths = [...screen.container.querySelectorAll("code")].map((code) => code.textContent);
+  expect(paths).toEqual(["/repos/a", "/repos/b`c"]);
+});

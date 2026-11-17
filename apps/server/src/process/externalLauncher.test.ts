@@ -7,6 +7,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -1270,6 +1271,37 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
       ),
     );
     assert.equal(spawned?.command, "cursor");
+
+    // The Cursor Agent CLI installs a `cursor` that exits 1 when it finds no IDE command.
+    const started = yield* Deferred.make<void>();
+    const launchWith = (spawnResult: MockSpawnResult) =>
+      Effect.gen(function* () {
+        const launcher = yield* ExternalLauncher.ExternalLauncher;
+        yield* launcher.launchEditor({ editor: "cursor", cwd: "/workspace" });
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            platform: "darwin",
+            env: { ...env, PATH: `${env.PATH}:/usr/bin` },
+            onSpawn: () => Deferred.doneUnsafe(started, Exit.void),
+            spawnResult: () => spawnResult,
+          }),
+        ),
+        Effect.exit,
+      );
+    const failed = yield* launchWith({ exitCode: 1 });
+    assert.isTrue(Exit.isFailure(failed));
+    if (Exit.isFailure(failed)) {
+      assert.instanceOf(
+        Cause.squash(failed.cause),
+        ExternalLauncher.ExternalLauncherEditorSpawnError,
+      );
+    }
+    // An editor command that keeps running has started; the launch does not wait for it.
+    const running = yield* Effect.forkChild(launchWith({ stall: true }));
+    yield* Deferred.await(started);
+    yield* TestClock.adjust("1 second");
+    assert.isTrue(Exit.isSuccess(yield* Fiber.join(running)));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

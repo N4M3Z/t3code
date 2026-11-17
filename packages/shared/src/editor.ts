@@ -220,7 +220,7 @@ export const resolveEditorCommand = Effect.fn("editor.resolveEditorCommand")(fun
   const probeZed = editor.id === "zed" && platform !== "win32";
   const rejected = new Set<string>();
   for (const candidate of candidates) {
-    // OpenZFS zed can shadow the editor's zed in an earlier PATH entry.
+    // An earlier PATH entry can hold OpenZFS zed or the Cursor Agent CLI's cursor script.
     const matches =
       (probeZed || probeCursor) && candidate === command
         ? yield* resolveCommandPaths(candidate, { env, until: () => false })

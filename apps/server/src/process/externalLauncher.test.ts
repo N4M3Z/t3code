@@ -819,6 +819,39 @@ for (const cwd of ["/workspace with spaces/", "/workspace with spaces/file.ts:12
   );
 }
 
+it.effect.skipIf(windowsHost)("prefers the macOS Cursor bundle over a cursor script on PATH", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cursor-agent-cli-" });
+    const bundle = path.join(home, "Applications/Cursor.app/Contents/Resources/app/bin/cursor");
+    const binDir = path.join(home, ".local/bin");
+    // The Cursor Agent CLI's cursor script exits 1 when no other cursor is on PATH.
+    for (const [command, script] of [
+      [bundle, "#!/bin/sh\n"],
+      [path.join(binDir, "cursor"), "#!/bin/sh\nexit 1\n"],
+    ] as const) {
+      yield* fs.makeDirectory(path.dirname(command), { recursive: true });
+      yield* fs.writeFileString(command, script);
+      yield* fs.chmod(command, 0o755);
+    }
+    const editor = EDITORS.find((editor) => editor.id === "cursor")!;
+    const resolve = resolveEditorCommand(editor, { HOME: home, PATH: binDir }).pipe(
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      // Keep a Cursor installed on the host in /Applications out of the result.
+      Effect.provideService(FileSystem.FileSystem, {
+        ...fs,
+        stat: (file) =>
+          fs.stat(file.startsWith(`${home}${path.sep}`) ? file : path.join(home, "missing")),
+      }),
+    );
+
+    assert.deepEqual(yield* resolve, Option.some({ command: bundle, baseArgs: ["--classic"] }));
+    yield* fs.remove(bundle);
+    assert.deepEqual(yield* resolve, Option.some({ command: "cursor", baseArgs: ["--classic"] }));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 for (const { layout, pathNames, fallbackNames, expected } of [
   { layout: "PATH", pathNames: ["zed", "zeditor"], fallbackNames: [], expected: "zeditor" },
   {
@@ -1231,7 +1264,10 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-editor-priority-" });
-    const executable = path.join(home, "Applications/Cursor.app/Contents/Resources/app/bin/code");
+    const executable = path.join(
+      home,
+      "Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+    );
     const env = { HOME: home, PATH: path.join(home, "bin") };
     const discover = Effect.gen(function* () {
       const launcher = yield* ExternalLauncher.ExternalLauncher;
@@ -1252,12 +1288,12 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
     );
     yield* fs.chmod(executable, 0o755);
     yield* fs.makeDirectory(env.PATH);
-    yield* fs.writeFileString(path.join(env.PATH, "cursor"), "#!/bin/sh\n");
-    yield* fs.chmod(path.join(env.PATH, "cursor"), 0o755);
+    yield* fs.writeFileString(path.join(env.PATH, "code"), "#!/bin/sh\n");
+    yield* fs.chmod(path.join(env.PATH, "code"), 0o755);
     let spawned: ChildProcess.StandardCommand | undefined;
     yield* Effect.gen(function* () {
       const launcher = yield* ExternalLauncher.ExternalLauncher;
-      yield* launcher.launchEditor({ editor: "cursor", cwd: "/workspace" });
+      yield* launcher.launchEditor({ editor: "vscode", cwd: "/workspace" });
     }).pipe(
       Effect.provide(
         layerTest({
@@ -1269,7 +1305,7 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
         }),
       ),
     );
-    assert.equal(spawned?.command, "cursor");
+    assert.equal(spawned?.command, "code");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

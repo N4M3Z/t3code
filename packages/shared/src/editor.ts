@@ -66,8 +66,9 @@ export const resolveEditorCommand = Effect.fn("editor.resolveEditorCommand")(fun
   if (editor.commands === null) return Option.none();
   const baseArgs = "baseArgs" in editor ? editor.baseArgs : [];
   const platform = yield* HostProcess.Platform;
-  // Prefer Zed's macOS bundle because OpenZFS also installs a zed executable.
-  const preferBundle = platform === "darwin" && editor.id === "zed";
+  // Prefer the macOS bundle: OpenZFS also installs a zed executable, and the Cursor Agent CLI
+  // installs a cursor script that cannot open the IDE.
+  const preferBundle = platform === "darwin" && (editor.id === "zed" || editor.id === "cursor");
   const preferZeditor = platform === "linux" && editor.id === "zed";
   if (platform === "win32" && editor.id === "zed") {
     const isStable = (resolved: string) => !isPrereleaseZedPath(resolved);

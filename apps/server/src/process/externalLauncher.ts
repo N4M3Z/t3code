@@ -876,13 +876,9 @@ const readGraphicalSessionEnv = Effect.fn("externalLauncher.readGraphicalSession
   Effect.orElseSucceed((): NodeJS.ProcessEnv => ({})),
 );
 
-// A launcher that exits non-zero this soon opened nothing, such as a CLI shim without its app.
-const EARLY_EXIT_WINDOW = "1 second";
-
 const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
   launch: ProcessLaunch,
   onError: (cause: unknown) => ExternalLauncherError,
-  failOnEarlyExit = false,
 ): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   // Inherited ELECTRON_RUN_AS_NODE would make Electron apps opened by this launcher run as Node and exit.
@@ -893,15 +889,12 @@ const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
     extendEnv: false,
   });
 
-  yield* Effect.gen(function* () {
-    const handle = yield* spawner.spawn(command);
-    yield* Effect.asVoid(handle.unref);
-    if (!failOnEarlyExit) return;
-    const exitCode = yield* handle.exitCode.pipe(Effect.timeoutOption(EARLY_EXIT_WINDOW));
-    if (Option.isSome(exitCode) && exitCode.value !== 0) {
-      return yield* Effect.fail(`${launch.command} exited with code ${exitCode.value}`);
-    }
-  }).pipe(Effect.scoped, Effect.mapError(onError));
+  yield* spawner.spawn(command).pipe(
+    Effect.flatMap((handle) => handle.unref),
+    Effect.asVoid,
+    Effect.scoped,
+    Effect.mapError(onError),
+  );
 });
 
 const launchBrowser = Effect.fn("externalLauncher.launchBrowser")(function* (
@@ -960,8 +953,6 @@ const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(fu
         args: spawnCommand.args,
         cause,
       }),
-    // File managers such as Explorer are not known to exit 0 after they open a folder.
-    launch.editor !== "file-manager",
   );
 });
 

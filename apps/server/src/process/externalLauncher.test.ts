@@ -819,38 +819,79 @@ for (const cwd of ["/workspace with spaces/", "/workspace with spaces/file.ts:12
   );
 }
 
-it.effect.skipIf(windowsHost)("prefers the macOS Cursor bundle over a cursor script on PATH", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cursor-agent-cli-" });
-    const bundle = path.join(home, "Applications/Cursor.app/Contents/Resources/app/bin/cursor");
-    const binDir = path.join(home, ".local/bin");
-    // The Cursor Agent CLI's cursor script exits 1 when no other cursor is on PATH.
-    for (const [command, script] of [
-      [bundle, "#!/bin/sh\n"],
-      [path.join(binDir, "cursor"), "#!/bin/sh\nexit 1\n"],
-    ] as const) {
-      yield* fs.makeDirectory(path.dirname(command), { recursive: true });
-      yield* fs.writeFileString(command, script);
-      yield* fs.chmod(command, 0o755);
-    }
-    const editor = EDITORS.find((editor) => editor.id === "cursor")!;
-    const resolve = resolveEditorCommand(editor, { HOME: home, PATH: binDir }).pipe(
-      Effect.provideService(HostProcess.Platform, "darwin"),
-      // Keep a Cursor installed on the host in /Applications out of the result.
-      Effect.provideService(FileSystem.FileSystem, {
-        ...fs,
-        stat: (file) =>
-          fs.stat(file.startsWith(`${home}${path.sep}`) ? file : path.join(home, "missing")),
-      }),
-    );
+// The Cursor Agent CLI installs a cursor script that fails when no IDE is behind it.
+const failingCursor = "#!/bin/sh\necho 'Error: no IDE behind this script' >&2\nexit 1\n";
+for (const { title, first, later, bundled, expected } of [
+  {
+    title: "keeps a working cursor on PATH ahead of the Cursor bundle",
+    first: "#!/bin/sh\n",
+    later: false,
+    bundled: true,
+    expected: "path",
+  },
+  {
+    title: "skips a failing cursor on PATH for the Cursor bundle",
+    first: failingCursor,
+    later: false,
+    bundled: true,
+    expected: "bundle",
+  },
+  {
+    title: "skips a failing cursor on PATH for a working cursor later on PATH",
+    first: failingCursor,
+    later: true,
+    bundled: false,
+    expected: "later",
+  },
+  {
+    title: "does not offer Cursor when the only cursor on PATH fails",
+    first: failingCursor,
+    later: false,
+    bundled: false,
+    expected: "none",
+  },
+] as const) {
+  it.effect.skipIf(windowsHost)(title, () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cursor-agent-cli-" });
+      const bundle = path.join(home, "Applications/Cursor.app/Contents/Resources/app/bin/cursor");
+      const binDir = path.join(home, ".local/bin");
+      const laterCursor = path.join(home, "later-bin/cursor");
+      for (const [command, script] of [
+        [path.join(binDir, "cursor"), first],
+        ...(later ? [[laterCursor, "#!/bin/sh\n"] as const] : []),
+        ...(bundled ? [[bundle, "#!/bin/sh\n"] as const] : []),
+      ] as const) {
+        yield* fs.makeDirectory(path.dirname(command), { recursive: true });
+        yield* fs.writeFileString(command, script);
+        yield* fs.chmod(command, 0o755);
+      }
+      const editor = EDITORS.find((editor) => editor.id === "cursor")!;
+      const resolved = yield* resolveEditorCommand(editor, {
+        HOME: home,
+        PATH: `${binDir}:${path.dirname(laterCursor)}`,
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        // Keep a Cursor installed on the host in /Applications out of the result.
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          stat: (file) =>
+            fs.stat(file.startsWith(`${home}${path.sep}`) ? file : path.join(home, "missing")),
+        }),
+      );
 
-    assert.deepEqual(yield* resolve, Option.some({ command: bundle, baseArgs: ["--classic"] }));
-    yield* fs.remove(bundle);
-    assert.deepEqual(yield* resolve, Option.some({ command: "cursor", baseArgs: ["--classic"] }));
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
+      const commands = { path: "cursor", bundle, later: laterCursor };
+      assert.deepEqual(
+        resolved,
+        expected === "none"
+          ? Option.none()
+          : Option.some({ command: commands[expected], baseArgs: ["--classic"] }),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+}
 
 for (const { layout, pathNames, fallbackNames, expected } of [
   { layout: "PATH", pathNames: ["zed", "zeditor"], fallbackNames: [], expected: "zeditor" },
@@ -1264,10 +1305,7 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-editor-priority-" });
-    const executable = path.join(
-      home,
-      "Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
-    );
+    const executable = path.join(home, "Applications/Cursor.app/Contents/Resources/app/bin/code");
     const env = { HOME: home, PATH: path.join(home, "bin") };
     const discover = Effect.gen(function* () {
       const launcher = yield* ExternalLauncher.ExternalLauncher;
@@ -1288,12 +1326,12 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
     );
     yield* fs.chmod(executable, 0o755);
     yield* fs.makeDirectory(env.PATH);
-    yield* fs.writeFileString(path.join(env.PATH, "code"), "#!/bin/sh\n");
-    yield* fs.chmod(path.join(env.PATH, "code"), 0o755);
+    yield* fs.writeFileString(path.join(env.PATH, "cursor"), "#!/bin/sh\n");
+    yield* fs.chmod(path.join(env.PATH, "cursor"), 0o755);
     let spawned: ChildProcess.StandardCommand | undefined;
     yield* Effect.gen(function* () {
       const launcher = yield* ExternalLauncher.ExternalLauncher;
-      yield* launcher.launchEditor({ editor: "vscode", cwd: "/workspace" });
+      yield* launcher.launchEditor({ editor: "cursor", cwd: "/workspace" });
     }).pipe(
       Effect.provide(
         layerTest({
@@ -1305,7 +1343,7 @@ it.effect.skipIf(windowsHost)("ignores unusable app bundles and keeps PATH launc
         }),
       ),
     );
-    assert.equal(spawned?.command, "code");
+    assert.equal(spawned?.command, "cursor");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
